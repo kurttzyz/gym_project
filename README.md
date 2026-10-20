@@ -134,7 +134,7 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 32 checks
+The Django runner executes a subprocess integration suite containing 35 checks
 and two direct database-routing boundary tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
@@ -163,3 +163,10 @@ start from common defaults; each gym's edits stay in its own database. See the
 
 When upgrading, run both `manage.py migrate` and `manage.py migrate_gym_databases`
 before starting Django so existing gyms receive their website settings.
+
+## Try two sample gyms
+
+Run `python manage.py setup_demo_gyms` in your activated local environment to
+create IronFit and Titans with separate owner accounts and databases. The command
+prompts for a local demo password; it does not hardcode or print passwords.
+Follow the [Windows sample guide](docs/demo.md) for hosts-file entries and login URLs.

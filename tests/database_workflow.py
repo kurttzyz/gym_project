@@ -516,6 +516,64 @@ class GymDatabaseTests(unittest.TestCase):
             HTTP_ORIGIN=f"http://{self.domain_a.hostname}").status_code, 302)
 
 
+    def test_demo_setup_creates_two_isolated_owner_portals_and_preserves_edits(self):
+        with override_settings(DEBUG=True), patch(
+            "gyms.management.commands.setup_demo_gyms.getpass", return_value="Local-Demo-Strong-94!"
+        ):
+            call_command("setup_demo_gyms", verbosity=0)
+        first = Organization.objects.get(slug="demo-ironfit")
+        second = Organization.objects.get(slug="demo-titans")
+        self.assertNotEqual(first.database_key, second.database_key)
+        for gym, username, hostname in (
+            (first, "demo_ironfit_owner", "demo-ironfit.test"),
+            (second, "demo_titans_owner", "demo-titans.test"),
+        ):
+            owner = get_user_model().objects.get(username=username)
+            self.assertFalse(owner.is_staff or owner.is_superuser)
+            client = Client(HTTP_HOST=hostname)
+            self.assertEqual(client.get("/").status_code, 200)
+            response = client.post("/accounts/login/", {
+                "username": username, "password": "Local-Demo-Strong-94!"
+            })
+            self.assertEqual(response["Location"], "/manage/")
+            self.assertContainsText(client.get("/manage/website/"), gym.name)
+            other = Client(HTTP_HOST="demo-titans.test" if gym == first else "demo-ironfit.test")
+            other.force_login(owner)
+            self.assertEqual(other.get("/manage/").status_code, 404)
+        alias = ready_database(first)
+        WebsiteSettings.objects.using(alias).filter(pk=1).update(hero_title="My edited demo")
+        counts = (Organization.objects.count(), get_user_model().objects.count())
+        with override_settings(DEBUG=True), patch(
+            "gyms.management.commands.setup_demo_gyms.getpass"
+        ) as prompt:
+            call_command("setup_demo_gyms", verbosity=0)
+            prompt.assert_not_called()
+        self.assertEqual(counts, (Organization.objects.count(), get_user_model().objects.count()))
+        self.assertEqual(WebsiteSettings.objects.using(alias).get(pk=1).hero_title, "My edited demo")
+
+    def test_demo_setup_is_disabled_in_production(self):
+        with override_settings(DEBUG=False):
+            with self.assertRaises(CommandError):
+                call_command("setup_demo_gyms", verbosity=0)
+
+    def test_demo_setup_rejects_domain_collision_without_creating_gyms(self):
+        token = uuid4().hex
+        spec = {"slug": f"collision-{token}", "name": "Collision demo", "color": "#123456",
+                "username": f"collision-{token}", "hostname": f"collision-{token}.test"}
+        domain = GymDomain.objects.create(organization=self.a, hostname=spec["hostname"])
+        try:
+            before = Organization.objects.count()
+            with override_settings(DEBUG=True), patch(
+                "gyms.management.commands.setup_demo_gyms.DEMOS", (spec,)
+            ), patch("gyms.management.commands.setup_demo_gyms.getpass") as prompt:
+                with self.assertRaises(CommandError):
+                    call_command("setup_demo_gyms", verbosity=0)
+                prompt.assert_not_called()
+            self.assertEqual(Organization.objects.count(), before)
+        finally:
+            domain.delete()
+
+
 if __name__ == "__main__":
     try:
         with override_settings(ALLOWED_HOSTS=["*"], PLATFORM_HOSTS=["localhost", "testserver"]):
