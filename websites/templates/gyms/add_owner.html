@@ -1,1 +1,0 @@
-{% extends "gyms/base.html" %}{% block content %}<p><a href="{% url 'gym-detail' gym.slug %}">← Gym details</a></p><h1>Create an owner for {{ gym.name }}</h1><form class="card editor" method="post">{% csrf_token %}{{ form.as_p }}<p class="help">This account can customize this gym's website. It cannot administer Powerhouse.</p><button>Create owner</button></form>{% endblock %}
