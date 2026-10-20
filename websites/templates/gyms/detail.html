@@ -1,8 +1,17 @@
-{% extends "gyms/base.html" %}{% block content %}<p><a href="{% url 'dashboard' %}">All your gyms</a></p><h1>{{ gym.name }}</h1><h2>Branches</h2><div class="grid">{% for branch in branches %}<article class="card"><h3>{{ branch.name }}</h3><p>{{ branch.address }}</p></article>{% empty %}<p>No branches added yet.</p>{% endfor %}</div><h2>Gym owners</h2>{% for access in owners %}<p>{{ access.user.username }} · {{ access.user.email }}{% if not access.is_active %} (inactive access){% endif %}</p>{% empty %}<p>No owner assigned yet.</p>{% endfor %}<p><a class="button" href="{% url 'owner-add' gym.slug %}">Create gym owner</a></p><h2>Custom domains</h2>
-{% for domain in domains %}<section class="card"><h3>{{ domain.hostname }}</h3>
-<p>{% if not domain.is_active %}Disabled{% elif domain.verified_at %}Verified{% else %}Pending ownership verification{% endif %}</p>
-{% if not domain.verified_at %}<p>Create this DNS TXT record:</p><p>Name: <code>_powerhouse-verification.{{ domain.hostname }}</code></p><p>Value: <code>{{ domain.verification_token }}</code></p><p>After DNS propagation, your platform operator can run the domain verification command.</p>{% endif %}
-</section>{% empty %}<p>No custom domains registered.</p>{% endfor %}
-<h3>Register a domain</h3><form class="card" method="post" action="{% url 'domain-add' gym.slug %}">{% csrf_token %}{{ domain_form.as_p }}<button>Register domain</button></form>
-<p>Verified domains also need DNS routing to your server and an HTTPS certificate.</p>
+{% extends "gyms/base.html" %}{% block content %}
+<p><a href="{% url 'dashboard' %}">← All gyms</a></p><h1>{{ gym.name }}</h1>
+{% if database_error %}<section class="card"><h2>Finish gym setup</h2><p>The database is not ready or could not be reached. The gym and its owner accounts have been preserved.</p><form method="post" action="{% url 'gym-retry' gym.slug %}">{% csrf_token %}<button>Retry setup</button></form></section>{% endif %}
+<h2>Gym owners</h2>{% for access in owners %}<p>{{ access.user.username }} · {{ access.user.email }}{% if not access.is_active %} (inactive access){% endif %}</p>{% empty %}<p>No owner assigned yet.</p>{% endfor %}
+<p><a class="button" href="{% url 'owner-add' gym.slug %}">Create gym owner</a></p>
+<h2>Website &amp; owner login</h2>
+{% if local_portals %}<section class="card"><h3>Local testing, without setup commands</h3><p>Create a ready-to-use .localhost address. Modern Chrome and Edge resolve it on your PC without a hosts-file edit.</p><form method="post" action="{% url 'local-portal' gym.slug %}">{% csrf_token %}<button>Enable local portal</button></form></section>{% endif %}
+{% for card in domain_cards %}<section class="card" style="margin-top:18px"><h3>{{ card.domain.hostname }}</h3>
+<p>{% if not card.domain.is_active %}Disabled{% elif card.domain.verified_at %}Ownership verified{% else %}Pending ownership verification{% endif %}</p>
+{% if card.links %}<div class="actions"><a class="button" href="{{ card.links.website }}" target="_blank" rel="noopener">Open website ↗</a><a class="button secondary" href="{{ card.links.login }}" target="_blank" rel="noopener">Owner login ↗</a><a href="{{ card.links.owner }}" target="_blank" rel="noopener">Owner dashboard ↗</a></div>{% endif %}
+{% if card.domain.is_active and not card.domain.verified_at %}{% if card.local %}<p>Local testing domain. A .test address still needs a hosts-file entry; use Enable local portal above to avoid that.</p>{% else %}<p>Add this DNS TXT record with your domain provider:</p><p>Name: <code>_powerhouse-verification.{{ card.domain.hostname }}</code></p><p>Value: <code>{{ card.domain.verification_token }}</code></p>{% endif %}
+{% if not card.local or local_portals %}<form method="post" action="{% url 'domain-verify' gym.slug card.domain.pk %}">{% csrf_token %}<button>{% if card.local %}Activate local domain{% else %}Verify domain{% endif %}</button></form>{% endif %}{% endif %}
+{% if not card.local %}<p class="help">Ownership verification does not configure DNS routing or HTTPS. Point this hostname to your deployment and enable its certificate with your hosting provider.</p>{% endif %}
+</section>{% empty %}<p>No domains registered yet.</p>{% endfor %}
+<h3>Add a custom domain</h3><form class="card" method="post" action="{% url 'domain-add' gym.slug %}">{% csrf_token %}{{ domain_form.as_p }}<button>Register domain</button></form>
+<h2>Branches</h2><div class="grid">{% for branch in branches %}<article class="card"><h3>{{ branch.name }}</h3><p>{{ branch.address }}</p></article>{% empty %}<p>No branches added yet.</p>{% endfor %}</div>
 {% endblock %}

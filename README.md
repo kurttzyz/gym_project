@@ -134,7 +134,7 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 35 checks
+The Django runner executes a subprocess integration suite containing 43 checks
 and two direct database-routing boundary tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
@@ -143,15 +143,19 @@ Run against a development PostgreSQL server with provisioning access.
 
 ## White-label gym domains
 
-Powerhouse is the platform provider; each gym uses its own independent domain,
-name, logo, and color. Register a gym domain from its platform detail page, verify
-its DNS TXT challenge, and configure DNS/HTTPS at your ingress. Unknown or
-unverified domains never resolve to a gym. Gym hostnames have no platform routes.
-Platform hosts are configured with `PLATFORM_HOSTS`, replacing DJANGO_ALLOWED_HOSTS.
+Each gym uses its own independent domain, name, logo, and color. During local
+onboarding on a loopback platform host, a ready-to-use `.localhost` portal is
+created automatically. Open the website or owner-login links from the gym's detail
+page. Existing gyms can select Enable local portal. No per-gym terminal commands
+or hosts-file edits are needed in modern Chrome/Edge.
 
-For local Windows testing use `ironfit.test` in your hosts file and the DEBUG-only
-`verify_gym_domain ironfit.test --local` command. See the complete
-[custom-domain onboarding and Windows guide](docs/custom-domains.md).
+Real domains can be registered during onboarding or on the gym detail page. Publish
+the displayed DNS TXT challenge and click Verify domain. Actual DNS routing and
+HTTPS require your hosting provider; the app does not configure them automatically.
+Unknown/unverified domains never resolve to a gym, and tenant hosts have no platform
+routes. Platform-only hosts are configured through PLATFORM_HOSTS.
+
+See the [dashboard domain workflow](docs/custom-domains.md).
 
 ## Reusable websites and gym owner accounts
 
@@ -164,9 +168,9 @@ start from common defaults; each gym's edits stay in its own database. See the
 When upgrading, run both `manage.py migrate` and `manage.py migrate_gym_databases`
 before starting Django so existing gyms receive their website settings.
 
-## Try two sample gyms
+## Try two gyms through the UI
 
-Run `python manage.py setup_demo_gyms` in your activated local environment to
-create IronFit and Titans with separate owner accounts and databases. The command
-prompts for a local demo password; it does not hardcode or print passwords.
-Follow the [Windows sample guide](docs/demo.md) for hosts-file entries and login URLs.
+Use Add another gym to create IronFit and Titans with their respective owners.
+Both automatically receive separate databases, websites, and local portals. Follow
+the [two-gym walkthrough](docs/demo.md). No demo scripts are needed. If provisioning
+fails or an older gym lacks its website schema, use Retry setup on its detail page.

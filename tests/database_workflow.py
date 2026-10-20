@@ -202,7 +202,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.user.save()
         slug = uuid4().hex
         with patch("platform_core.views.provision_database", side_effect=DatabaseError("unavailable")):
-            self.assertEqual(self.client.post("/gyms/new/", {"name": "Retry", "slug": slug, "primary_color": "#245ac5", **self.owner_payload()}).status_code, 503)
+            self.assertEqual(self.client.post("/gyms/new/", {"name": "Retry", "slug": slug, "primary_color": "#245ac5", **self.owner_payload()}).status_code, 302)
         gym = Organization.objects.get(slug=slug)
         self.assertFalse(gym.database_ready)
         call_command("migrate_gym_databases", slug=slug, verbosity=0)
@@ -302,19 +302,18 @@ class GymDatabaseTests(unittest.TestCase):
             domain.save()
 
     def test_dns_verification_requires_exact_token(self):
-        self.domain_a.verified_at = None
-        self.domain_a.save()
-        with patch("gyms.management.commands.verify_gym_domain.dns.resolver.resolve", return_value=[SimpleNamespace(strings=[b"wrong"])]) as resolve:
+        domain = GymDomain.objects.create(organization=self.a, hostname=f"proof-{uuid4().hex}.example.com")
+        with patch("gyms.domains.dns.resolver.resolve", return_value=[SimpleNamespace(strings=[b"wrong"])]) as resolve:
             with self.assertRaises(CommandError):
-                call_command("verify_gym_domain", self.domain_a.hostname)
-            resolve.assert_called_once_with(f"_powerhouse-verification.{self.domain_a.hostname}.", "TXT", lifetime=5)
-        self.domain_a.refresh_from_db()
-        self.assertIsNone(self.domain_a.verified_at)
-        token = self.domain_a.verification_token.encode()
-        with patch("gyms.management.commands.verify_gym_domain.dns.resolver.resolve", return_value=[SimpleNamespace(strings=[token[:10], token[10:]])]):
-            call_command("verify_gym_domain", self.domain_a.hostname)
-        self.domain_a.refresh_from_db()
-        self.assertIsNotNone(self.domain_a.verified_at)
+                call_command("verify_gym_domain", domain.hostname)
+            resolve.assert_called_once_with(f"_powerhouse-verification.{domain.hostname}.", "TXT", lifetime=5)
+        domain.refresh_from_db()
+        self.assertIsNone(domain.verified_at)
+        token = domain.verification_token.encode()
+        with patch("gyms.domains.dns.resolver.resolve", return_value=[SimpleNamespace(strings=[token[:10], token[10:]])]):
+            call_command("verify_gym_domain", domain.hostname)
+        domain.refresh_from_db()
+        self.assertIsNotNone(domain.verified_at)
 
     def test_local_verification_is_debug_only_and_restricted(self):
         self.domain_a.verified_at = None
@@ -498,7 +497,10 @@ class GymDatabaseTests(unittest.TestCase):
             editor.delete_model(WebsiteSettings)
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="websites").delete()
         self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/").status_code, 503)
-        call_command("migrate_gym_databases", slug=self.a.slug, verbosity=0)
+        self.user.is_superuser = True
+        self.user.save()
+        self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"), "Retry setup")
+        self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/retry-setup/").status_code, 302)
         site = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
         self.assertEqual(site.display_name, self.a.name)
         self.assertEqual(Location.objects.using(self.alias_a).get(pk=self.branch_a.pk).address, "Address A")
@@ -572,6 +574,143 @@ class GymDatabaseTests(unittest.TestCase):
             self.assertEqual(Organization.objects.count(), before)
         finally:
             domain.delete()
+
+
+    def test_onboarding_automatically_creates_local_portal_and_registers_custom_domain(self):
+        self.user.is_superuser = True
+        self.user.save()
+        slug = "auto-" + uuid4().hex
+        hostname = f"{slug}.example.com"
+        response = self.client.post("/gyms/new/", {
+            "name": "Automatic gym", "slug": slug, "primary_color": "#123456",
+            "domain_hostname": hostname, **self.owner_payload(),
+        })
+        self.assertEqual(response.status_code, 302)
+        gym = Organization.objects.get(slug=slug)
+        local = GymDomain.objects.get(organization=gym, hostname=f"{slug}.localhost")
+        self.assertIsNotNone(local.verified_at)
+        self.assertIsNone(GymDomain.objects.get(hostname=hostname).verified_at)
+        self.assertContainsText(Client(HTTP_HOST=local.hostname).get("/"), "Automatic gym")
+        self.assertContainsText(self.client.get(response["Location"]), "Owner login")
+
+    def test_enable_local_portal_for_existing_gym_preserves_owners_and_uses_visible_port(self):
+        self.user.is_superuser = True
+        self.user.save()
+        client = Client(HTTP_HOST="localhost:8000")
+        client.force_login(self.user)
+        before = (get_user_model().objects.count(), Organization.objects.count())
+        path = f"/gyms/{self.a.slug}/local-portal/"
+        for _ in range(2):
+            self.assertEqual(client.post(path).status_code, 302)
+        domain = GymDomain.objects.get(organization=self.a, hostname=f"{self.a.slug}.localhost")
+        response = client.get(f"/gyms/{self.a.slug}/")
+        self.assertContainsText(response, f"http://{domain.hostname}:8000/accounts/login/")
+        self.assertEqual(before, (get_user_model().objects.count(), Organization.objects.count()))
+        self.assertTrue(Membership.objects.filter(organization=self.a, user=self.user, role="owner").exists())
+
+    def test_dashboard_dns_verification_requires_matching_proof_and_correct_gym(self):
+        self.user.is_superuser = True
+        self.user.save()
+        domain = GymDomain.objects.create(organization=self.a, hostname=f"dns-{uuid4().hex}.example.com")
+        path = f"/gyms/{self.a.slug}/domains/{domain.pk}/verify/"
+        with patch("gyms.domains.dns.resolver.resolve", return_value=[SimpleNamespace(strings=[b"wrong"])]) as resolve:
+            response = self.client.post(path, {"local": "true"}, follow=True)
+            self.assertContainsText(response, "does not match")
+            resolve.assert_called_once()
+        domain.refresh_from_db()
+        self.assertIsNone(domain.verified_at)
+        with patch("gyms.domains.dns.resolver.resolve", return_value=[SimpleNamespace(strings=[domain.verification_token.encode()])]):
+            response = self.client.post(path, follow=True)
+        self.assertContainsText(response, f"https://{domain.hostname}/accounts/login/")
+        self.assertEqual(self.client.post(f"/gyms/{self.b.slug}/domains/{domain.pk}/verify/").status_code, 404)
+        domain.is_active = False
+        domain.verified_at = None
+        domain.save()
+        with patch("gyms.domains.dns.resolver.resolve") as resolve:
+            self.client.post(path)
+            resolve.assert_not_called()
+        domain.refresh_from_db()
+        self.assertIsNone(domain.verified_at)
+
+    def test_onboarding_actions_require_platform_role_post_and_csrf(self):
+        paths = (f"/gyms/{self.a.slug}/local-portal/", f"/gyms/{self.a.slug}/retry-setup/",
+                 f"/gyms/{self.a.slug}/domains/{self.domain_a.pk}/verify/")
+        for path in paths:
+            self.assertEqual(self.client.post(path).status_code, 403)
+        self.user.is_superuser = True
+        self.user.save()
+        for path in paths:
+            self.assertEqual(self.client.get(path).status_code, 405)
+            self.assertEqual(self.tenant_client().post(path).status_code, 404)
+        client = Client(HTTP_HOST="localhost", enforce_csrf_checks=True)
+        client.force_login(self.user)
+        client.get(f"/gyms/{self.a.slug}/")
+        for path in paths:
+            self.assertEqual(client.post(path).status_code, 403)
+        token = client.cookies["csrftoken"].value
+        self.assertEqual(client.post(paths[0], {"csrfmiddlewaretoken": token}).status_code, 302)
+
+    def test_production_rejects_local_activation_and_does_not_create_local_portal(self):
+        self.user.is_superuser = True
+        self.user.save()
+        with override_settings(DEBUG=False):
+            self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/local-portal/").status_code, 403)
+            self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/").status_code, 404)
+            self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/domains/", {"hostname": "not-public.localhost"}).status_code, 400)
+            slug = "prod-" + uuid4().hex
+            self.assertEqual(self.client.post("/gyms/new/", {
+                "name": "Production gym", "slug": slug, "primary_color": "#123456", **self.owner_payload()
+            }).status_code, 302)
+            self.assertFalse(Organization.objects.get(slug=slug).domains.exists())
+
+    def test_local_hostname_collision_does_not_take_over_other_gym(self):
+        self.user.is_superuser = True
+        self.user.save()
+        occupied = GymDomain.objects.create(organization=self.b, hostname=f"{self.a.slug}.localhost")
+        self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/local-portal/").status_code, 302)
+        occupied.refresh_from_db()
+        self.assertEqual(occupied.organization_id, self.b.pk)
+        self.assertIsNone(occupied.verified_at)
+        fallback = GymDomain.objects.get(organization=self.a, hostname=f"gym-{self.a.database_key.hex}.localhost")
+        self.assertIsNotNone(fallback.verified_at)
+        fallback.is_active = False
+        fallback.save()
+        self.client.post(f"/gyms/{self.a.slug}/local-portal/")
+        fallback.refresh_from_db()
+        self.assertFalse(fallback.is_active)
+
+    def test_failed_provisioning_is_recoverable_entirely_through_dashboard(self):
+        self.user.is_superuser = True
+        self.user.save()
+        slug = "retry-ui-" + uuid4().hex
+        account = self.owner_payload()
+        with patch("platform_core.views.provision_database", side_effect=DatabaseError("not ready")):
+            response = self.client.post("/gyms/new/", {
+                "name": "Retry through dashboard", "slug": slug, "primary_color": "#123456", **account
+            }, follow=True)
+        self.assertContainsText(response, "Retry setup")
+        gym = Organization.objects.get(slug=slug)
+        self.assertFalse(gym.database_ready)
+        self.assertEqual(self.client.post(f"/gyms/{slug}/retry-setup/").status_code, 302)
+        gym.refresh_from_db()
+        self.assertTrue(gym.database_ready)
+        self.assertEqual(gym.memberships.filter(role="owner").count(), 1)
+        self.assertTrue(get_user_model().objects.get(username=account["owner-username"]).check_password(account["owner-password1"]))
+        domain = GymDomain.objects.get(organization=gym, hostname=f"{slug}.localhost")
+        self.assertContainsText(Client(HTTP_HOST=domain.hostname).get("/"), "Retry through dashboard")
+
+    def test_remote_platform_does_not_offer_loopback_links(self):
+        self.user.is_superuser = True
+        self.user.save()
+        self.client.post(f"/gyms/{self.a.slug}/local-portal/")
+        with override_settings(PLATFORM_HOSTS=["platform.example.com"]):
+            remote = Client(HTTP_HOST="platform.example.com")
+            remote.force_login(self.user)
+            response = remote.get(f"/gyms/{self.a.slug}/")
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn(b"Enable local portal", response.content)
+            self.assertNotIn(f'http://{self.a.slug}.localhost'.encode(), response.content)
+            self.assertEqual(remote.post(f"/gyms/{self.a.slug}/local-portal/").status_code, 403)
 
 
 if __name__ == "__main__":

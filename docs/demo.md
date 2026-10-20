@@ -1,69 +1,35 @@
-# Two-gym local demo (Windows)
+# Two-gym example through the real UI
 
-This example demonstrates Powerhouse as the technology provider, with IronFit
-and Titans as separate customer gyms. It does not configure public DNS or use a
-real payment provider. PostgreSQL and your existing platform superuser are required.
+No demo command or hosts-file edit is needed for normal local testing. Use modern
+Chrome/Edge and the running Powerhouse platform on your PC.
 
-Stop Django with Ctrl+C, then from your activated PowerShell environment:
+1. Sign in at http://127.0.0.1:8000/ with your existing platform superuser.
+2. Select Add another gym and create:
 
-```powershell
-git pull origin main
-python manage.py migrate --noinput
-python manage.py migrate_gym_databases
-python manage.py setup_demo_gyms
-```
+   | Field | IronFit | Titans |
+   |---|---|---|
+   | Name | IronFit Gym | Titans Fitness |
+   | Internal identifier | ironfit | titans |
+   | Owner username | ironfit_owner | titans_owner |
+   | Accent color | #28734e | #7145a3 |
 
-The command requires DJANGO_DEBUG=true. It prompts twice for a password of your
-choice (input is hidden); both newly created sample owner accounts use that password.
-No hardcoded password is included. Existing owner passwords are never reset on rerun.
+   Enter an owner email and a strong initial password for each. Leave the custom
+   domain blank for local testing. Powerhouse automatically provisions each gym's
+   database, owner membership, default website, and local .localhost portal.
+3. On each gym's platform detail page, click Owner login. The actual URL is shown
+   there, normally `http://ironfit.localhost:8000/accounts/login/` and
+   `http://titans.localhost:8000/accounts/login/` for the names above.
+4. Sign in as the respective owner. You land on `/manage/` on that gym's domain.
+5. Edit IronFit through Customize website, save, and open both public websites.
+   IronFit changes; Titans retains its own content and database.
+6. IronFit's owner cannot sign in to Titans without a separate active membership.
+   Public websites are intentionally visible to everyone; management pages are private.
 
-It creates:
+If you already created these gyms, open each detail page and select Enable local
+portal instead of recreating the gym or owner. If setup could not finish, use Retry
+setup on that same page. These actions preserve passwords and existing edits.
 
-| Gym | Owner username | Local domain |
-|---|---|---|
-| IronFit Demo | demo_ironfit_owner | demo-ironfit.test |
-| Titans Demo | demo_titans_owner | demo-titans.test |
-
-Each gym has its own UUID-based PostgreSQL database/login, website settings,
-active owner membership, and locally verified test-domain mapping. No platform
-superuser is created. The accounts cannot administer Powerhouse.
-
-Open Notepad as administrator and edit:
-
-```text
-C:\Windows\System32\drivers\etc\hosts
-```
-
-Add and save this line without changing the file's extension:
-
-```text
-127.0.0.1 demo-ironfit.test demo-titans.test
-```
-
-Start Django:
-
-```powershell
-python manage.py runserver
-```
-
-## Try the two portals
-
-1. Open http://demo-ironfit.test:8000/accounts/login/ and sign in as
-   `demo_ironfit_owner` with the password you selected.
-2. You land at http://demo-ironfit.test:8000/manage/. Select Customize website.
-3. Change IronFit's heading or color, save, and open http://demo-ironfit.test:8000/.
-4. Open http://demo-titans.test:8000/ and observe it retains its own branding/content.
-5. Sign in at http://demo-titans.test:8000/accounts/login/ as `demo_titans_owner`
-   using the selected demo password. Its dashboard/editor belong only to Titans.
-6. IronFit credentials are rejected on Titans' login because that owner has no
-   active Titans membership. Public websites are intentionally readable by anyone.
-
-Your existing platform administrator still uses http://127.0.0.1:8000/. Both gym
-registrations appear there; their owners do not get platform administration rights.
-
-Rerunning setup_demo_gyms migrates existing demo databases and preserves website
-edits and owner passwords. It refuses conflicting reserved demo identities/domains
-and will not re-enable disabled accounts or domains. Provisioning is retryable if
-a database step fails; central records remain. This command only seeds local sample
-gyms and is disabled when DEBUG is false. Production tenants use normal onboarding
-with individual passwords, verified real domains, and HTTPS.
+The legacy `setup_demo_gyms` management command remains an optional developer tool,
+with separate demo-* identities. It is not needed for this UI workflow. For real
+public domains, use Register domain and Verify domain on the gym detail page and
+configure DNS/HTTPS through your provider; see custom-domains.md.

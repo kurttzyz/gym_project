@@ -1,10 +1,27 @@
 from django import forms
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from .models import GymDomain, Membership, Organization, normalize_hostname
 
 
 class GymForm(forms.ModelForm):
+    domain_hostname = forms.CharField(
+        required=False, max_length=253, label="Custom domain (optional)",
+        help_text="For a real gym domain, enter only its hostname. During local development a local portal is created automatically.",
+    )
+
+    def clean_domain_hostname(self):
+        value = self.cleaned_data["domain_hostname"]
+        if not value:
+            return ""
+        value = normalize_hostname(value)
+        if GymDomain.objects.filter(hostname=value).exists():
+            raise forms.ValidationError("This domain is already registered.")
+        if not settings.DEBUG and value.endswith((".localhost", ".test")):
+            raise forms.ValidationError("Use a real domain outside local development.")
+        return value
+
     class Meta:
         model = Organization
         fields = ("name", "slug", "logo_url", "primary_color")
@@ -17,7 +34,10 @@ class DomainForm(forms.ModelForm):
         fields = ("hostname",)
 
     def clean_hostname(self):
-        return normalize_hostname(self.cleaned_data["hostname"])
+        hostname = normalize_hostname(self.cleaned_data["hostname"])
+        if not settings.DEBUG and hostname.endswith((".localhost", ".test")):
+            raise forms.ValidationError("Use a real domain outside local development.")
+        return hostname
 
 
 class PortalAuthenticationForm(AuthenticationForm):

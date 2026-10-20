@@ -11,8 +11,10 @@ their gym's website; they do not become Django platform staff or superusers.
 3. Creation commits the central gym, user, and owner membership together. It then
    provisions the gym database, applies tenant migrations, and initializes the
    website from the shared defaults. No password is displayed in the result.
-4. Register/verify the gym's custom domain on its detail page. Configure DNS and
-   HTTPS for public domains; use the local hosts-file procedure for `.test` domains.
+4. For local testing, click the automatically created local portal's Owner login
+   link. Existing gyms can use Enable local portal; no hosts-file edit or terminal
+   verification is required. Real domains use the dashboard's Verify domain action
+   after publishing the DNS challenge; DNS routing and HTTPS remain provider setup.
 5. Share the owner's initial credentials through a private channel. Automatic
    invitation emails, account recovery, and first-login password changes are not
    implemented yet. Do not put passwords in domains, URLs, source control, or tickets.
@@ -24,7 +26,8 @@ This creates a new nonstaff account scoped to that gym. To grant access to an
 existing platform identity, use central Membership administration instead.
 Usernames are globally unique; creating an owner never resets another user's password.
 If provisioning fails, the central gym/owner records remain and provisioning can
-be retried with `migrate_gym_databases --slug <slug>`. It does not create another owner.
+be retried with the Retry setup button on its platform detail page. This does not
+create another owner or reset the owner's password.
 
 ## One reusable website, individual settings
 

@@ -2,17 +2,22 @@ from functools import wraps
 import logging
 
 import psycopg
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError, connection, transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_POST
 
 from config.database_router import gym_database
 from tenant_data.models import Location
+from websites.models import WebsiteSettings
 from gyms.databases import GymDatabaseUnavailable, provision_database, ready_database
 from gyms.forms import DomainForm, GymForm, OwnerAccountForm
-from gyms.models import Membership, Organization
+from gyms.models import GymDomain, Membership, Organization
+from gyms.domains import (DomainVerificationError, ensure_local_portal, is_local_hostname,
+                          local_portals_enabled, portal_links, verify_domain)
 
 
 def platform_required(view):
@@ -55,29 +60,47 @@ def add_gym(request):
             gym = form.save()
             owner = owner_form.save()
             Membership.objects.create(organization=gym, user=owner, role=Membership.Role.OWNER)
+            if form.cleaned_data["domain_hostname"]:
+                GymDomain.objects.create(organization=gym, hostname=form.cleaned_data["domain_hostname"])
         try:
             provision_database(gym)
         except (GymDatabaseUnavailable, DatabaseError, psycopg.Error, OSError):
             logging.getLogger(__name__).exception("Gym provisioning failed for %s", gym.pk)
-            return render(request, "gyms/unavailable.html", status=503)
+            messages.error(request, "Gym and owner were saved, but database setup needs a retry. Use Retry setup below.")
+            return redirect("gym-detail", slug=gym.slug)
+        if local_portals_enabled(request):
+            try:
+                ensure_local_portal(gym)
+            except DomainVerificationError as error:
+                messages.error(request, str(error))
         return redirect("gym-detail", slug=gym.slug)
     return render(request, "gyms/add.html", {"form": form, "owner_form": owner_form})
+
+
+def gym_detail_context(request, gym, domain_form=None):
+    database_error = False
+    branches = []
+    try:
+        with gym_database(ready_database(gym)):
+            branches = list(Location.objects.all())
+            WebsiteSettings.objects.only("pk").get(pk=1)
+    except (GymDatabaseUnavailable, DatabaseError, WebsiteSettings.DoesNotExist, OSError):
+        database_error = True
+    domains = list(gym.domains.all())
+    cards = [{"domain": domain, "links": portal_links(request, domain),
+              "local": is_local_hostname(domain.hostname)} for domain in domains]
+    return {
+        "gym": gym, "branches": branches, "database_error": database_error,
+        "domain_form": domain_form if domain_form is not None else DomainForm(),
+        "domain_cards": cards, "local_portals": local_portals_enabled(request),
+        "owners": gym.memberships.filter(role=Membership.Role.OWNER).select_related("user"),
+    }
 
 
 @platform_required
 def gym_detail(request, slug):
     gym = get_object_or_404(Organization, slug=slug)
-    try:
-        alias = ready_database(gym)
-        with gym_database(alias):
-            branches = list(Location.objects.all())
-    except (GymDatabaseUnavailable, DatabaseError, OSError):
-        return render(request, "gyms/unavailable.html", status=503)
-    return render(request, "gyms/detail.html", {
-        "gym": gym, "branches": branches, "domain_form": DomainForm(),
-        "domains": gym.domains.all(),
-        "owners": gym.memberships.filter(role=Membership.Role.OWNER).select_related("user"),
-    })
+    return render(request, "gyms/detail.html", gym_detail_context(request, gym))
 
 
 @platform_required
@@ -90,11 +113,10 @@ def add_domain(request, slug):
         domain = form.save(commit=False)
         domain.organization = gym
         domain.save()
+        if domain.hostname.endswith(".localhost") and local_portals_enabled(request):
+            verify_domain(domain, local=True)
         return redirect("gym-detail", slug=gym.slug)
-    return render(request, "gyms/detail.html", {
-        "gym": gym, "domains": gym.domains.all(), "domain_form": form,
-        "branches": [],
-    }, status=400)
+    return render(request, "gyms/detail.html", gym_detail_context(request, gym, form), status=400)
 
 
 @platform_required
@@ -107,3 +129,46 @@ def add_owner(request, slug):
             Membership.objects.create(organization=gym, user=owner, role=Membership.Role.OWNER)
         return redirect("gym-detail", slug=gym.slug)
     return render(request, "gyms/add_owner.html", {"gym": gym, "form": form})
+
+
+@platform_required
+@require_POST
+def enable_local_portal(request, slug):
+    gym = get_object_or_404(Organization, slug=slug)
+    if not local_portals_enabled(request):
+        raise PermissionDenied
+    try:
+        ensure_local_portal(gym)
+        messages.success(request, "Local portal is ready. Use the website and owner-login links below.")
+    except DomainVerificationError as error:
+        messages.error(request, str(error))
+    return redirect("gym-detail", slug=gym.slug)
+
+
+@platform_required
+@require_POST
+def verify_gym_domain(request, slug, domain_id):
+    domain = get_object_or_404(GymDomain, pk=domain_id, organization__slug=slug)
+    try:
+        if is_local_hostname(domain.hostname) and not local_portals_enabled(request):
+            raise DomainVerificationError("Activate local domains only from the local development platform.")
+        verify_domain(domain, local=is_local_hostname(domain.hostname))
+        messages.success(request, "Domain ownership verified. Website and owner-login links are available below.")
+    except DomainVerificationError as error:
+        messages.error(request, str(error))
+    return redirect("gym-detail", slug=slug)
+
+
+@platform_required
+@require_POST
+def retry_gym_setup(request, slug):
+    gym = get_object_or_404(Organization, slug=slug)
+    try:
+        provision_database(gym)
+        if local_portals_enabled(request):
+            ensure_local_portal(gym)
+        messages.success(request, "Gym setup is complete. Existing accounts and website edits were preserved.")
+    except (DomainVerificationError, GymDatabaseUnavailable, DatabaseError, psycopg.Error, OSError):
+        logging.getLogger(__name__).exception("Gym setup retry failed for %s", gym.pk)
+        messages.error(request, "Setup could not finish. Check the PostgreSQL service or contact the platform operator.")
+    return redirect("gym-detail", slug=slug)

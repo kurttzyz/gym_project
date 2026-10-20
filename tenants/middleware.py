@@ -3,6 +3,7 @@ from django.core.exceptions import DisallowedHost
 from django.http import HttpResponseNotFound
 from django.http.request import split_domain_port
 from gyms.models import GymDomain
+from gyms.domains import is_local_hostname
 
 
 class TenantHostMiddleware:
@@ -20,6 +21,8 @@ class TenantHostMiddleware:
         if host in settings.PLATFORM_HOSTS:
             request.urlconf = "platform_config.urls"
         else:
+            if not settings.DEBUG and is_local_hostname(host):
+                return HttpResponseNotFound("Unknown host")
             domain = GymDomain.objects.select_related("organization").filter(
                 hostname=host, verified_at__isnull=False, is_active=True
             ).first()

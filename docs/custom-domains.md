@@ -1,109 +1,88 @@
-# White-label custom domains
+# Gym portals without per-gym terminal commands
 
-Powerhouse is the hosting provider. A gym uses its own hostname such as
-`ironfitgym.com`; no Powerhouse subdomain is required. A domain maps exactly to one
-gym, which has its own PostgreSQL database/login and branding. `www` is a separate
-hostname: register and verify it separately if you want to use it.
+Powerhouse provisions gym databases, owner accounts, and starter websites through
+the Add gym form. Domain registration, activation, verification, and setup retries
+are also available in the platform dashboard. Operator management commands remain
+optional maintenance tools, not the normal gym-onboarding workflow.
 
-## Platform setup
+## Local Windows workflow
 
-`PLATFORM_HOSTS` is the comma-separated list of platform-only hostnames, without
-schemes or ports. Local defaults are `localhost,127.0.0.1,[::1]`. Set it in `.env`:
+1. Sign in to Powerhouse at `http://127.0.0.1:8000/` as a platform superuser.
+2. Select Add another gym. Enter the gym, owner credentials, and initial branding.
+   A real custom domain is optional; leave it blank for local testing.
+3. Create gym & owner. In DEBUG mode, on a loopback platform host, Powerhouse
+   creates and activates a local address such as `ironfit.localhost` automatically.
+4. On the gym detail page, click **Open website**, **Owner login**, or **Owner dashboard**.
+   The links preserve the port used by your local platform (e.g. 8000).
+5. For an already-created gym, open its detail page and click **Enable local portal**.
+   Its existing owner, password, database, and website edits are preserved.
 
-```dotenv
-PLATFORM_HOSTS=localhost,127.0.0.1,[::1]
-```
+Modern Chrome and Edge resolve `.localhost` to the local machine automatically.
+No hosts-file entry, public DNS record, or verification command is needed. If a
+browser/proxy does not honor the localhost convention, use a supported local
+browser and bypass any proxy for localhost addresses. Local portals are not meant
+to be shared with another computer: localhost always refers to the viewer's PC.
 
-Only platform superusers can sign in to the Powerhouse control panel. Existing
-tenant accounts should sign in at their own domain instead. Central administration
-is available only on platform hosts and requires an active staff superuser.
-Do not put gym domains in PLATFORM_HOSTS: doing so reserves them for the platform.
-The old DJANGO_ALLOWED_HOSTS setting is replaced by registry-based host validation.
+Human-readable hostnames use the gym slug; a UUID-based fallback prevents a
+collision from taking over another gym's hostname. Actual links are displayed in
+the dashboard. Existing disabled domains are not silently reactivated. `.test`
+domains are still supported for manual development, but unlike `.localhost` they
+need an operating-system hosts entry. Use the automatic local portal instead.
 
-## Onboard a gym
+Local automation requires `DJANGO_DEBUG=true` and a platform request on localhost,
+127.0.0.1, or ::1. Local activation is denied on remote platform hosts and when
+DEBUG is false. Local tenant domains are rejected outside development, even if
+an old local domain registry record is marked verified.
 
-1. Sign in to the platform and select Add another gym. Supply the gym's name,
-   internal slug, HTTPS logo URL (optional), and six-digit brand color. Creation
-   provisions the separate database. Branding can be edited in platform admin.
-2. Create its owner account in the onboarding form (or use Create gym owner for
-   an existing gym); additional access memberships can be managed in `/admin/`. Users are shared
-   identities but must have an active membership for each gym portal they access.
-3. Open the gym's platform detail page and register its hostname. Supply only a
-   hostname, e.g. `ironfitgym.com`, without `https://`, a port, or a path. Hostnames
-   are normalized to lowercase IDNA, unique, and cannot be rebound to another gym.
-4. Give the gym owner the displayed DNS TXT name and random challenge value.
-   They must publish `_powerhouse-verification.ironfitgym.com` with that value.
-   Some DNS panels expect only `_powerhouse-verification` in the record-name box.
-5. After DNS propagation, a trusted platform operator runs:
+## Real custom domains
 
-   ```sh
-   python manage.py verify_gym_domain ironfitgym.com
-   ```
+A gym uses its own independent hostname such as `ironfitgym.com`; no Powerhouse
+subdomain is required. Both apex and www are supported as separate domain bindings.
 
-   This queries public DNS and requires the exact TXT token. Failure does not mark
-   a pending domain verified. Verification is operator-controlled, not tenant editable.
-6. Point the domain's A/AAAA or provider-supported alias record to your deployment.
-   If using a CNAME on a subdomain, point it to the ingress hostname your deployment
-   provides. Apex CNAME support depends on the DNS provider.
-7. Configure your reverse proxy/ingress to accept that verified hostname, preserve
-   the original Host, and serve a valid HTTPS certificate for it. Prefer configuring
-   routing/TLS before the verification step makes the hostname active in Django.
+1. Enter the hostname in the Add gym form, or add it to an existing gym's detail page.
+   Supply only the hostname, without scheme, port, or path.
+2. Powerhouse displays a DNS TXT challenge. In the domain's DNS provider, publish
+   `_powerhouse-verification.ironfitgym.com` with the exact displayed value.
+   Some DNS panels expect just `_powerhouse-verification` in the name field.
+3. Click **Verify domain** in Powerhouse. The server checks public DNS with a
+   bounded timeout. Missing or incorrect proof leaves the domain pending and
+   provides a retry message. There is no command to run.
+4. Route the domain to your deployment using A/AAAA, or a provider-supported alias.
+   For subdomains, a CNAME can target your hosting ingress where supported.
+5. Configure your ingress/reverse proxy for that exact hostname and a valid HTTPS
+   certificate. Preserve the original Host header. Prefer completing routing and
+   TLS before activating the hostname. The dashboard's public-domain links use HTTPS.
 
-The app implements domain binding, verification, and routing. It does not buy
-customer domains, change their DNS, issue certificates, or configure a public ingress.
-Those steps require your actual domain/deployment access. The DNS TXT token should
-remain in place; periodic reverification and ownership-change detection are future work.
-Disable a domain in central admin when retiring it or when ownership is uncertain.
+The app checks ownership; it does not control your DNS provider or hosting service.
+It cannot automatically buy domains, edit external DNS records, or issue/configure
+HTTPS without those provider integrations. Verification does not claim that DNS
+routing or TLS has been configured. No provider credentials are currently required
+or embedded. Keep the TXT record in place; periodic reverification remains future work.
 
-## Local Windows testing without buying a domain
+## Setup recovery
 
-1. Start Django at `127.0.0.1:8000` and sign in at `http://127.0.0.1:8000/` as your
-   platform superuser. Create a gym (e.g. IronFit) with its owner account, and register `ironfit.test` on the gym detail page.
-2. With Notepad running as administrator, edit:
+A provisioning failure retains the central gym, owner account, and membership.
+The platform detail page displays **Retry setup**, which reapplies migrations and
+initializes missing website settings while preserving owner passwords/content.
+Older gyms whose website schema has not been initialized can use the same button.
+If PostgreSQL is down, start its service and retry. A previously ready database
+that disappears must be restored; the button never silently replaces it empty.
+No new owner is created by retrying setup.
 
-   ```text
-   C:\Windows\System32\drivers\etc\hosts
-   ```
+## Security and configuration
 
-   Add:
+`PLATFORM_HOSTS` lists platform-only hostnames without schemes or ports. Local
+defaults are localhost,127.0.0.1,[::1]. Do not add gym hostnames there. Domain bindings
+are immutable and unique. Disabled, unknown, and unverified domains fail closed.
 
-   ```text
-   127.0.0.1 ironfit.test
-   ```
+All dashboard actions require a platform superuser and CSRF-protected POST.
+Verification resolves the domain within the selected gym; changing a URL/domain ID
+cannot verify another gym's binding. A posted `local=true` cannot bypass public DNS.
+The CLI and web dashboard share the same verification implementation.
 
-3. From the activated Python environment, run:
+Django ALLOWED_HOSTS is dynamic (`*`); first-position TenantHostMiddleware performs
+exact registry/PLATFORM_HOSTS validation before redirects and authentication.
+X-Forwarded-Host is not trusted. Cookies are host-only; production makes them secure.
+Tenant URLconfs do not expose platform onboarding or administration routes.
 
-   ```powershell
-   python manage.py verify_gym_domain ironfit.test --local
-   ```
-
-   The bypass works only with DJANGO_DEBUG=true and `.test`/`.localhost` hostnames.
-   It cannot activate public custom domains or run when debug is disabled.
-4. Visit `http://ironfit.test:8000/`. Its homepage is the public IronFit website. Sign in at `/accounts/login/`;
-   the owner lands in `/manage/` and edits the site at `/manage/website/`. Platform accounts with no gym
-   membership cannot use the gym portal. Signing into Powerhouse does not sign you
-   into independent domains: each host has its own session cookie.
-5. Repeat with `titans.test` for a second gym and a second hosts-file entry.
-
-## Boundaries and production configuration
-
-Unknown, unverified, and disabled hosts return 404 with no default tenant fallback.
-Malformed hosts are rejected. Tenant hosts have no `/admin/`, platform provisioning,
-platform gym-list API, or slug-based gym-switching routes. Membership authorization
-is checked before selecting a tenant database, including for superusers on a tenant
-host. Shared platform users and memberships remain central by design.
-
-Django ALLOWED_HOSTS uses `*` because domains are dynamic; TenantHostMiddleware is
-the first middleware and performs the actual exact host allowlisting. Do not remove
-or reorder it behind redirects or host-dependent middleware. X-Forwarded-Host is
-not trusted. Session and CSRF cookies are host-only; production DEBUG=false makes
-both secure. Keep CSRF origin checks enabled. No wildcard CSRF origins are added.
-For a TLS-terminating proxy, configure Django's secure-proxy header only if the
-trusted proxy strips incoming spoofed headers and sets that header itself.
-
-Tenant-owned operational features should live under `gym_core.urls`, check
-request.tenant membership, and use an explicit authorized gym_database context.
-Platform control-plane views belong under platform_config.urls and require a superuser.
-
-
-See [owner websites](owner-websites.md) for reusable templates and owner onboarding.
+See [owner websites](owner-websites.md) for owner permissions and customization.
