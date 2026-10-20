@@ -27,10 +27,9 @@ PostgreSQL is exposed only on loopback, with password authentication. Docker's
 `postgres_data` volume retains local data across container restarts. `docker compose
 stop` stops the server without removing data; never use `down -v` on data to retain.
 
-Sign in at `/accounts/login/`. Platform superusers can **Add another gym** from `/`.
+Sign in at `/accounts/login/` on a platform host. Platform superusers can **Add another gym** from `/`.
 Creation provisions and migrates that gym's database automatically. Assign its
-owner/user membership in `/admin/`. Ordinary users see only their assigned gyms
-and branches. Gym records cannot be created/deleted through central admin, and
+owner/user membership in `/admin/`. Gym users sign in on their gym's verified custom domain and see only that gym. Gym records cannot be created/deleted through central admin, and
 branch administration is not exposed through the central admin.
 
 ## Structure
@@ -49,11 +48,11 @@ Access memberships are separate from future paid subscriptions.
 
 ## Endpoints
 
-- `/`: platform gym list or user's assigned gyms.
+- `/`: Powerhouse gym registry on platform hosts; branded gym dashboard on tenant hosts.
 - `/gyms/new/`: platform-superuser-only gym provisioning.
-- `/gyms/<slug>/`: authorized gym dashboard and branches.
+- `/gyms/<slug>/`: platform-only gym details, branding, domains, and branches.
 - `/accounts/login/` and `/accounts/logout/`: session login and POST logout.
-- `/api/organizations/`: user's active gym memberships, requiring login.
+- `/api/organizations/`: platform-superuser-only organization API.
 - `/health/`: platform database connectivity check; not an all-gym readiness check.
 - `/admin/`: platform maintenance and access assignment.
 
@@ -125,8 +124,20 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes one subprocess integration suite containing 11 checks.
+The Django runner executes one subprocess integration suite containing 20 checks.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
 and PostgreSQL connection privileges, then removes only its own databases/roles.
 Run against a development PostgreSQL server with provisioning access.
+
+## White-label gym domains
+
+Powerhouse is the platform provider; each gym uses its own independent domain,
+name, logo, and color. Register a gym domain from its platform detail page, verify
+its DNS TXT challenge, and configure DNS/HTTPS at your ingress. Unknown or
+unverified domains never resolve to a gym. Gym hostnames have no platform routes.
+Platform hosts are configured with `PLATFORM_HOSTS`, replacing DJANGO_ALLOWED_HOSTS.
+
+For local Windows testing use `ironfit.test` in your hosts file and the DEBUG-only
+`verify_gym_domain ironfit.test --local` command. See the complete
+[custom-domain onboarding and Windows guide](docs/custom-domains.md).

@@ -1,5 +1,6 @@
 asgiref==3.12.1
 Django==5.2.18
+dnspython==2.9.0
 psycopg==3.2.13
 psycopg-binary==3.2.13
 python-dotenv==1.2.4

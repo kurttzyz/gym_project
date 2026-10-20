@@ -21,8 +21,9 @@ keys. All databases use PostgreSQL; local development uses one PostgreSQL 17 ser
 
 ## Request boundary
 
-1. Authenticate against the platform database.
-2. Resolve the gym through active memberships (or explicit platform superuser access).
+1. Resolve the exact host to a platform endpoint or a verified gym domain, then
+   authenticate against the central identity database.
+2. Resolve the gym through active memberships (superuser maintenance is available only on platform hosts).
 3. Resolve its database from its server-generated UUID, never a user-supplied connection string.
 4. Enter a context-local database scope and fully evaluate tenant queries there.
 5. Reset the scope on success and exceptions.
@@ -93,3 +94,20 @@ Local Docker credentials are generated once into ignored `.env`; production must
 supply securely managed secrets and trusted TLS settings. Backups must include all
 databases, roles, and the derivation secret. Docker volume persistence is local
 runtime persistence and does not establish fresh cloud-task restoration.
+
+
+## Custom-domain portals
+
+The central GymDomain registry binds immutable normalized hostnames to gyms, with
+random DNS TXT challenges, verification timestamps, and an active flag. Unknown or
+unverified domains fail closed. First-position host middleware sets request.tenant
+and selects either the platform URLconf or the tenant URLconf before authentication.
+Platform provisioning/admin routes do not exist in the tenant URLconf. Tenant login
+and dashboard access require active membership, including for platform superusers.
+A request cannot select its gym through a URL slug, query string, or forwarded host.
+
+Branding comes from the resolved tenant (name, HTTPS logo URL, validated color),
+including on login and database-unavailable pages. Platform pages use Powerhouse.
+Cookies remain host-only and CSRF remains same-origin. Platform identity/access
+records are intentionally central; operational data remains per-gym PostgreSQL.
+See [domain setup](custom-domains.md) for DNS verification, TLS, and local testing.

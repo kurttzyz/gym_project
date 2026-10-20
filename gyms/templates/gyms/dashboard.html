@@ -1,5 +1,5 @@
 {% extends "gyms/base.html" %}{% block content %}
-<h1>{% if user.is_superuser %}Platform gyms{% else %}Your gyms{% endif %}</h1>
+<h1>{% if user.is_superuser %}Powerhouse · Gym tenants{% else %}Your gyms{% endif %}</h1>
 <p>Independent gyms, each with its own branches and memberships.</p>
 {% if user.is_superuser %}<p><a class="button" href="{% url 'gym-add' %}">Add another gym</a></p>{% endif %}
 <div class="grid">{% for gym in gyms %}<article class="card"><h2>{{ gym.name }}</h2><a href="{% url 'gym-detail' gym.slug %}">Open gym</a></article>{% empty %}<p>No gyms assigned yet. Contact your platform administrator.</p>{% endfor %}</div>

@@ -1,0 +1,4 @@
+{% extends "gyms/base.html" %}{% block content %}
+<h1>Welcome to {{ branding_name }}</h1><p>Your gym portal</p>
+<h2>Our branches</h2><div class="grid">{% for branch in branches %}<article class="card"><h3>{{ branch.name }}</h3><p>{{ branch.address }}</p></article>{% empty %}<p>No branches added yet.</p>{% endfor %}</div>
+{% endblock %}

@@ -29,9 +29,18 @@ if not SECRET_KEY:
     if not DEBUG:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required when debug is disabled")
     SECRET_KEY = "django-insecure-local-development-only"
-ALLOWED_HOSTS = [host.strip() for host in os.environ.get(
-    "DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]"
+# Host validation is dynamic: TenantHostMiddleware accepts only this platform
+# list or an exact verified GymDomain. Keep it before all host-sensitive middleware.
+PLATFORM_HOSTS = [host.strip().lower() for host in os.environ.get(
+    "PLATFORM_HOSTS", "localhost,127.0.0.1,[::1]"
 ).split(",") if host.strip()]
+ALLOWED_HOSTS = ["*"]
+USE_X_FORWARDED_HOST = False
+SESSION_COOKIE_DOMAIN = None
+CSRF_COOKIE_DOMAIN = None
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+
 AUTH_USER_MODEL = "accounts.User"
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "dashboard"
@@ -43,7 +52,7 @@ INSTALLED_APPS = [
     'accounts',
     'gyms',
     'tenant_data',
-    'django.contrib.admin',
+    'config.apps.PowerhouseAdminConfig',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -52,6 +61,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'gyms.middleware.TenantHostMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -71,6 +81,7 @@ TEMPLATES = [
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.request',
+                'gyms.context_processors.branding',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
             ],
@@ -151,3 +162,5 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # One central PostgreSQL database and a separate database/login per gym.
 DATABASE_ROUTERS = ["config.database_router.GymDatabaseRouter"]
+
+FORMS_URLFIELD_ASSUME_HTTPS = True

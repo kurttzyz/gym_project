@@ -1,17 +1,28 @@
-from django.contrib.auth.decorators import login_required
-from django.db import connection
-from django.http import JsonResponse
-
-from django.core.exceptions import PermissionDenied
-from django.shortcuts import get_object_or_404, redirect, render
+from functools import wraps
 import logging
+
 import psycopg
-from django.db import DatabaseError
+from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
+from django.db import DatabaseError, connection
+from django.http import Http404, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+
 from config.database_router import gym_database
 from tenant_data.models import Location
 from .databases import GymDatabaseUnavailable, provision_database, ready_database
-from .forms import GymForm
-from .models import Organization
+from .forms import DomainForm, GymForm
+from .models import Membership, Organization
+
+
+def platform_required(view):
+    @login_required
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        if request.tenant is not None or not request.user.is_superuser:
+            raise PermissionDenied
+        return view(request, *args, **kwargs)
+    return wrapped
 
 
 def health(request):
@@ -21,29 +32,20 @@ def health(request):
     return JsonResponse({"status": "ok"})
 
 
-@login_required
+@platform_required
 def organizations(request):
-    providers = Organization.objects.filter(
-        memberships__user=request.user, memberships__is_active=True
-    ).values("id", "name", "slug")
+    providers = Organization.objects.values("id", "name", "slug")
     return JsonResponse({"organizations": list(providers)})
 
 
-@login_required
+@platform_required
 def dashboard(request):
-    gyms = Organization.objects.filter(
-        memberships__user=request.user, memberships__is_active=True
-    )
-    if request.user.is_superuser:
-        gyms = Organization.objects.all()
+    gyms = Organization.objects.all()
     return render(request, "gyms/dashboard.html", {"gyms": gyms})
 
 
-@login_required
+@platform_required
 def add_gym(request):
-    # Only the hosting platform can provision a new tenant.
-    if not request.user.is_superuser:
-        raise PermissionDenied
     form = GymForm(request.POST if request.method == "POST" else None)
     if request.method == "POST" and form.is_valid():
         gym = form.save()
@@ -56,19 +58,48 @@ def add_gym(request):
     return render(request, "gyms/add.html", {"form": form})
 
 
-@login_required
+@platform_required
 def gym_detail(request, slug):
-    # Resolve authorization before loading any tenant-owned data.
-    allowed = Organization.objects.all() if request.user.is_superuser else (
-        Organization.objects.filter(
-            memberships__user=request.user, memberships__is_active=True
-        )
-    )
-    gym = get_object_or_404(allowed, slug=slug)
+    gym = get_object_or_404(Organization, slug=slug)
     try:
         alias = ready_database(gym)
         with gym_database(alias):
             branches = list(Location.objects.all())
     except (GymDatabaseUnavailable, DatabaseError, OSError):
         return render(request, "gyms/unavailable.html", status=503)
-    return render(request, "gyms/detail.html", {"gym": gym, "branches": branches})
+    return render(request, "gyms/detail.html", {
+        "gym": gym, "branches": branches, "domain_form": DomainForm(),
+        "domains": gym.domains.all(),
+    })
+
+
+@platform_required
+def add_domain(request, slug):
+    gym = get_object_or_404(Organization, slug=slug)
+    if request.method != "POST":
+        return redirect("gym-detail", slug=gym.slug)
+    form = DomainForm(request.POST)
+    if form.is_valid():
+        domain = form.save(commit=False)
+        domain.organization = gym
+        domain.save()
+        return redirect("gym-detail", slug=gym.slug)
+    return render(request, "gyms/detail.html", {
+        "gym": gym, "domains": gym.domains.all(), "domain_form": form,
+        "branches": [],
+    }, status=400)
+
+
+@login_required
+def tenant_dashboard(request):
+    gym = request.tenant
+    if gym is None or not Membership.objects.filter(
+        organization=gym, user=request.user, is_active=True
+    ).exists():
+        raise Http404
+    try:
+        with gym_database(ready_database(gym)):
+            branches = list(Location.objects.all())
+    except (GymDatabaseUnavailable, DatabaseError, OSError):
+        return render(request, "gyms/unavailable.html", status=503)
+    return render(request, "gyms/tenant_dashboard.html", {"branches": branches})

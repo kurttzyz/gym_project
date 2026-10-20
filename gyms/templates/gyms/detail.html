@@ -1,1 +1,8 @@
-{% extends "gyms/base.html" %}{% block content %}<p><a href="{% url 'dashboard' %}">All your gyms</a></p><h1>{{ gym.name }}</h1><h2>Branches</h2><div class="grid">{% for branch in branches %}<article class="card"><h3>{{ branch.name }}</h3><p>{{ branch.address }}</p></article>{% empty %}<p>No branches added yet.</p>{% endfor %}</div>{% endblock %}
+{% extends "gyms/base.html" %}{% block content %}<p><a href="{% url 'dashboard' %}">All your gyms</a></p><h1>{{ gym.name }}</h1><h2>Branches</h2><div class="grid">{% for branch in branches %}<article class="card"><h3>{{ branch.name }}</h3><p>{{ branch.address }}</p></article>{% empty %}<p>No branches added yet.</p>{% endfor %}</div><h2>Custom domains</h2>
+{% for domain in domains %}<section class="card"><h3>{{ domain.hostname }}</h3>
+<p>{% if not domain.is_active %}Disabled{% elif domain.verified_at %}Verified{% else %}Pending ownership verification{% endif %}</p>
+{% if not domain.verified_at %}<p>Create this DNS TXT record:</p><p>Name: <code>_powerhouse-verification.{{ domain.hostname }}</code></p><p>Value: <code>{{ domain.verification_token }}</code></p><p>After DNS propagation, your platform operator can run the domain verification command.</p>{% endif %}
+</section>{% empty %}<p>No custom domains registered.</p>{% endfor %}
+<h3>Register a domain</h3><form class="card" method="post" action="{% url 'domain-add' gym.slug %}">{% csrf_token %}{{ domain_form.as_p }}<button>Register domain</button></form>
+<p>Verified domains also need DNS routing to your server and an HTTPS certificate.</p>
+{% endblock %}
