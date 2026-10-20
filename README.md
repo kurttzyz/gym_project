@@ -28,8 +28,9 @@ PostgreSQL is exposed only on loopback, with password authentication. Docker's
 stop` stops the server without removing data; never use `down -v` on data to retain.
 
 Sign in at `/accounts/login/` on a platform host. Platform superusers can **Add another gym** from `/`.
-Creation provisions and migrates that gym's database automatically. Assign its
-owner/user membership in `/admin/`. Gym users sign in on their gym's verified custom domain and see only that gym. Gym records cannot be created/deleted through central admin, and
+Creation asks for the owner account and automatically provisions the gym database
+and website template. Existing gyms have a Create gym owner action on their detail
+page; additional memberships can be managed in `/admin/`. Gym users sign in on their gym's verified custom domain and see only that gym. Gym records cannot be created/deleted through central admin, and
 branch administration is not exposed through the central admin.
 
 ## Structure
@@ -55,7 +56,7 @@ are separate from planned paid gym subscriptions.
 
 ## Endpoints
 
-- `/`: Powerhouse gym registry on platform hosts; branded gym dashboard on tenant hosts.
+- `/`: Powerhouse gym registry on platform hosts; public gym website on tenant hosts.
 - `/gyms/new/`: platform-superuser-only gym provisioning.
 - `/gyms/<slug>/`: platform-only gym details, branding, domains, and branches.
 - `/accounts/login/` and `/accounts/logout/`: session login and POST logout.
@@ -63,8 +64,10 @@ are separate from planned paid gym subscriptions.
 - `/health/`: platform database connectivity check; not an all-gym readiness check.
 - `/admin/`: platform maintenance and access assignment.
 
-Self-service signup, branch editing UI, billing, plans, attendance, and tenant write
-APIs are not implemented yet. See [architecture](docs/architecture.md).
+Owner website editing is available at `/manage/website/` and the owner dashboard
+at `/manage/` on each gym domain. Member portals are at `/portal/`. Self-service
+signup, branch editing, billing, plans, attendance, and business transaction APIs
+are not implemented yet. See [architecture](docs/architecture.md).
 
 ## Configuration and security
 
@@ -131,7 +134,7 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 20 checks
+The Django runner executes a subprocess integration suite containing 32 checks
 and two direct database-routing boundary tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
@@ -149,3 +152,14 @@ Platform hosts are configured with `PLATFORM_HOSTS`, replacing DJANGO_ALLOWED_HO
 For local Windows testing use `ironfit.test` in your hosts file and the DEBUG-only
 `verify_gym_domain ironfit.test --local` command. See the complete
 [custom-domain onboarding and Windows guide](docs/custom-domains.md).
+
+## Reusable websites and gym owner accounts
+
+Powerhouse creates the gym and owner account in one onboarding form. Owners get a
+dedicated dashboard on their own domain and can customize the shared website
+through a tenant-local settings form. Two design presets are included. New gyms
+start from common defaults; each gym's edits stay in its own database. See the
+[owner onboarding and website guide](docs/owner-websites.md).
+
+When upgrading, run both `manage.py migrate` and `manage.py migrate_gym_databases`
+before starting Django so existing gyms receive their website settings.

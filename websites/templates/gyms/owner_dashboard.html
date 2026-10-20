@@ -1,0 +1,4 @@
+{% extends "gyms/base.html" %}{% block content %}
+<span class="eyebrow">Owner workspace</span><h1>Your gym. Your brand.</h1><p class="muted">Manage {{ branding_name }} from one place.</p>
+<div class="grid"><section class="card"><span class="eyebrow">Website</span><h2>{{ site.display_name }}</h2><p>{{ site.get_template_display }}</p><p class="muted">Customize your logo, colors, photos, website copy, and contact details.</p><a class="button" href="{% url 'website-edit' %}">Customize website</a><p><a href="{% url 'home' %}" target="_blank" rel="noopener">View public website ↗</a></p></section><section class="card"><span class="eyebrow">Your gym</span><h2>{{ branch_count }} branch{{ branch_count|pluralize:"es" }}</h2><p>Signed in as {{ user.username }}.</p><a href="{% url 'dashboard' %}">Open member portal</a></section></div>
+{% endblock %}

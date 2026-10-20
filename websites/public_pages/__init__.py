@@ -1,1 +1,1 @@
-"""Future branded public gym websites; currently only authenticated gym portals are available."""
+"""Public website rendering is implemented in websites.views.homepage."""

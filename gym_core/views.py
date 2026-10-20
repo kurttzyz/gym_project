@@ -7,6 +7,8 @@ from config.database_router import gym_database
 from gyms.databases import GymDatabaseUnavailable, ready_database
 from gyms.models import Membership
 from tenant_data.models import Location
+from .permissions import owner_required
+from websites.services import website_for_request
 
 
 @login_required
@@ -22,3 +24,14 @@ def tenant_dashboard(request):
     except (GymDatabaseUnavailable, DatabaseError, OSError):
         return render(request, "gyms/unavailable.html", status=503)
     return render(request, "gyms/tenant_dashboard.html", {"branches": branches})
+
+
+@owner_required
+def owner_dashboard(request):
+    try:
+        site = website_for_request(request)
+        with gym_database(ready_database(request.tenant)):
+            branch_count = Location.objects.count()
+    except (GymDatabaseUnavailable, DatabaseError, OSError):
+        return render(request, "gyms/unavailable.html", status=503)
+    return render(request, "gyms/owner_dashboard.html", {"site": site, "branch_count": branch_count})

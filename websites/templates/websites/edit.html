@@ -1,0 +1,6 @@
+{% extends "gyms/base.html" %}{% block content %}
+<p><a href="{% url 'owner-dashboard' %}">← Owner dashboard</a></p><h1>Make this website yours</h1><p class="muted">Choose a layout and customize your gym's content. Saving updates your public website immediately.</p>
+<form method="post" class="card editor">{% csrf_token %}{{ form.non_field_errors }}
+{% for field in form %}<div class="field">{{ field.label_tag }}{{ field }}{% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}{{ field.errors }}</div>{% endfor %}
+<div class="actions"><button>Save website</button><a class="button secondary" href="{% url 'home' %}" target="_blank" rel="noopener">View public website ↗</a></div></form>
+{% endblock %}

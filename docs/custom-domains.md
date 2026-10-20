@@ -25,7 +25,8 @@ The old DJANGO_ALLOWED_HOSTS setting is replaced by registry-based host validati
 1. Sign in to the platform and select Add another gym. Supply the gym's name,
    internal slug, HTTPS logo URL (optional), and six-digit brand color. Creation
    provisions the separate database. Branding can be edited in platform admin.
-2. Assign the gym's owner/user access membership in `/admin/`. Users are shared
+2. Create its owner account in the onboarding form (or use Create gym owner for
+   an existing gym); additional access memberships can be managed in `/admin/`. Users are shared
    identities but must have an active membership for each gym portal they access.
 3. Open the gym's platform detail page and register its hostname. Supply only a
    hostname, e.g. `ironfitgym.com`, without `https://`, a port, or a path. Hostnames
@@ -57,8 +58,7 @@ Disable a domain in central admin when retiring it or when ownership is uncertai
 ## Local Windows testing without buying a domain
 
 1. Start Django at `127.0.0.1:8000` and sign in at `http://127.0.0.1:8000/` as your
-   platform superuser. Create a gym (e.g. IronFit), assign its user membership in
-   admin, and register `ironfit.test` on the gym detail page.
+   platform superuser. Create a gym (e.g. IronFit) with its owner account, and register `ironfit.test` on the gym detail page.
 2. With Notepad running as administrator, edit:
 
    ```text
@@ -79,8 +79,8 @@ Disable a domain in central admin when retiring it or when ownership is uncertai
 
    The bypass works only with DJANGO_DEBUG=true and `.test`/`.localhost` hostnames.
    It cannot activate public custom domains or run when debug is disabled.
-4. Visit `http://ironfit.test:8000/`. Its login and dashboard show IronFit branding;
-   the user must have an active IronFit membership. Platform accounts with no gym
+4. Visit `http://ironfit.test:8000/`. Its homepage is the public IronFit website. Sign in at `/accounts/login/`;
+   the owner lands in `/manage/` and edits the site at `/manage/website/`. Platform accounts with no gym
    membership cannot use the gym portal. Signing into Powerhouse does not sign you
    into independent domains: each host has its own session cookie.
 5. Repeat with `titans.test` for a second gym and a second hosts-file entry.
@@ -104,3 +104,6 @@ trusted proxy strips incoming spoofed headers and sets that header itself.
 Tenant-owned operational features should live under `gym_core.urls`, check
 request.tenant membership, and use an explicit authorized gym_database context.
 Platform control-plane views belong under platform_config.urls and require a superuser.
+
+
+See [owner websites](owner-websites.md) for reusable templates and owner onboarding.

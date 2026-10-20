@@ -58,6 +58,12 @@ def provision_database(gym):
     config = connections.databases[alias]
     create_database(name, config["USER"], config["PASSWORD"], require_existing=gym.database_ready)
     call_command("migrate", database=alias, interactive=False, verbosity=0)
+    from websites.models import WebsiteSettings
+    WebsiteSettings.objects.using(alias).get_or_create(pk=1, defaults={
+        "display_name": gym.name,
+        "primary_color": getattr(gym, "primary_color", "#245ac5"),
+        "logo_url": getattr(gym, "logo_url", ""),
+    })
     type(gym).objects.filter(pk=gym.pk).update(database_ready=True)
     gym.database_ready = True
     return alias

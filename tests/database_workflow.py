@@ -28,6 +28,9 @@ from django.core.management.base import CommandError
 from django.core.exceptions import ValidationError
 from types import SimpleNamespace
 from tenant_data.models import Location
+from websites.models import WebsiteSettings
+from websites.forms import WebsiteSettingsForm
+from django.forms.models import model_to_dict
 
 
 class GymDatabaseTests(unittest.TestCase):
@@ -74,6 +77,19 @@ class GymDatabaseTests(unittest.TestCase):
         client.force_login(self.user)
         return client
 
+    def owner_payload(self):
+        token = uuid4().hex
+        return {
+            "owner-username": f"owner-{token}", "owner-email": f"owner-{token}@example.com",
+            "owner-password1": "GymOwner-Strong-84!", "owner-password2": "GymOwner-Strong-84!",
+        }
+
+    def website_payload(self, **updates):
+        site = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
+        data = model_to_dict(site, fields=WebsiteSettingsForm._meta.fields)
+        data.update(updates)
+        return data
+
     def test_existing_data_migrated(self):
         for index in range(2):
             gym = Organization.objects.get(slug=f"legacy-{index}")
@@ -91,9 +107,11 @@ class GymDatabaseTests(unittest.TestCase):
                 cursor.execute("SELECT current_database(), current_user")
                 self.assertEqual(cursor.fetchone(), (alias, alias))
         self.assertNotIn("tenant_data_location", connection.introspection.table_names())
+        self.assertNotIn("websites_websitesettings", connection.introspection.table_names())
         for alias in (self.alias_a, self.alias_b):
             tables = connections[alias].introspection.table_names()
             self.assertIn("tenant_data_location", tables)
+            self.assertIn("websites_websitesettings", tables)
             self.assertNotIn("accounts_user", tables)
             self.assertNotIn("gyms_membership", tables)
 
@@ -125,13 +143,13 @@ class GymDatabaseTests(unittest.TestCase):
 
     def test_unauthorized_gym_is_denied_before_database_lookup(self):
         with patch("gym_core.views.ready_database") as lookup:
-            self.assertEqual(self.tenant_client(self.domain_b).get("/").status_code, 404)
+            self.assertEqual(self.tenant_client(self.domain_b).get("/portal/").status_code, 404)
             lookup.assert_not_called()
-        response = self.tenant_client().get("/")
+        response = self.tenant_client().get("/portal/")
         self.assertContainsText(response, "Address A")
         self.assertNotIn(b"Private address B", response.content)
         Membership.objects.filter(user=self.user).update(is_active=False)
-        self.assertEqual(self.tenant_client().get("/").status_code, 404)
+        self.assertEqual(self.tenant_client().get("/portal/").status_code, 404)
 
     def assertContainsText(self, response, text):
         self.assertEqual(response.status_code, 200)
@@ -141,7 +159,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.user.is_superuser = True
         self.user.save()
         slug = uuid4().hex
-        response = self.client.post("/gyms/new/", {"name": "New gym", "slug": slug, "primary_color": "#245ac5"})
+        response = self.client.post("/gyms/new/", {"name": "New gym", "slug": slug, "primary_color": "#245ac5", **self.owner_payload()})
         self.assertEqual(response.status_code, 302)
         gym = Organization.objects.get(slug=slug)
         alias = ready_database(gym)
@@ -150,7 +168,7 @@ class GymDatabaseTests(unittest.TestCase):
         provision_database(gym)
         with gym_database(alias):
             self.assertEqual(Location.objects.get().name, "Retained")
-        response = self.client.post("/gyms/new/", {"name": "Duplicate", "slug": slug, "primary_color": "#245ac5"})
+        response = self.client.post("/gyms/new/", {"name": "Duplicate", "slug": slug, "primary_color": "#245ac5", **self.owner_payload()})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Organization.objects.filter(slug=slug).count(), 1)
 
@@ -184,7 +202,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.user.save()
         slug = uuid4().hex
         with patch("platform_core.views.provision_database", side_effect=DatabaseError("unavailable")):
-            self.assertEqual(self.client.post("/gyms/new/", {"name": "Retry", "slug": slug, "primary_color": "#245ac5"}).status_code, 503)
+            self.assertEqual(self.client.post("/gyms/new/", {"name": "Retry", "slug": slug, "primary_color": "#245ac5", **self.owner_payload()}).status_code, 503)
         gym = Organization.objects.get(slug=slug)
         self.assertFalse(gym.database_ready)
         call_command("migrate_gym_databases", slug=slug, verbosity=0)
@@ -194,7 +212,8 @@ class GymDatabaseTests(unittest.TestCase):
     def test_login_and_health(self):
         self.client = self.tenant_client()
         self.client.logout()
-        self.assertEqual(self.client.get("/").status_code, 302)
+        self.assertEqual(self.client.get("/portal/").status_code, 302)
+        self.assertEqual(self.client.get("/").status_code, 200)
         self.assertEqual(Client(HTTP_HOST="localhost").get("/health/").json(), {"status": "ok"})
         self.assertEqual(self.client.post("/accounts/login/", {
             "username": self.user.username, "password": "test-password"
@@ -220,14 +239,17 @@ class GymDatabaseTests(unittest.TestCase):
         client = self.tenant_client()
         for path in ("/admin/", "/gyms/new/", f"/gyms/{self.b.slug}/", "/api/organizations/"):
             self.assertEqual(client.get(path).status_code, 404)
-        self.assertContainsText(client.get("/"), "Address A")
-        self.assertNotIn(b"Private address B", client.get("/").content)
+        self.assertContainsText(client.get("/portal/"), "Address A")
+        self.assertNotIn(b"Private address B", client.get("/portal/").content)
 
     def test_white_label_login_and_dashboard(self):
         self.a.name = "IronFit independent gym"
         self.a.logo_url = "https://images.example.com/ironfit.png"
         self.a.primary_color = "#aa2233"
         self.a.save()
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(
+            display_name=self.a.name, logo_url=self.a.logo_url, primary_color=self.a.primary_color
+        )
         client = self.tenant_client()
         client.logout()
         response = client.get("/accounts/login/")
@@ -245,7 +267,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertEqual(other.post("/accounts/login/", {
             "username": self.user.username, "password": "test-password"
         }).status_code, 200)
-        self.assertEqual(other.get("/").status_code, 302)
+        self.assertEqual(other.get("/portal/").status_code, 302)
 
     def test_platform_login_rejects_tenant_account(self):
         self.client.logout()
@@ -322,10 +344,176 @@ class GymDatabaseTests(unittest.TestCase):
         self.user.save()
         response = self.client.post("/gyms/new/", {
             "name": "Unsafe", "slug": uuid4().hex,
-            "primary_color": "red;}body{display:none", "logo_url": "javascript:alert(1)"
+            "primary_color": "red;}body{display:none", "logo_url": "javascript:alert(1)", **self.owner_payload()
         })
         self.assertEqual(response.status_code, 200)
         self.assertFalse(Organization.objects.filter(name="Unsafe").exists())
+
+
+    def test_onboarding_creates_owner_and_template_without_platform_privileges(self):
+        self.user.is_superuser = True
+        self.user.save()
+        account = self.owner_payload()
+        slug = uuid4().hex
+        response = self.client.post("/gyms/new/", {
+            "name": "New owner gym", "slug": slug, "primary_color": "#aabbcc", **account,
+        })
+        self.assertEqual(response.status_code, 302)
+        gym = Organization.objects.get(slug=slug)
+        owner = get_user_model().objects.get(username=account["owner-username"])
+        self.assertTrue(owner.check_password(account["owner-password1"]))
+        self.assertFalse(owner.is_staff or owner.is_superuser)
+        self.assertTrue(Membership.objects.filter(user=owner, organization=gym, role="owner", is_active=True).exists())
+        with gym_database(ready_database(gym)):
+            site = WebsiteSettings.objects.get(pk=1)
+            self.assertEqual(site.display_name, "New owner gym")
+            self.assertEqual(site.primary_color, "#aabbcc")
+        domain = GymDomain.objects.create(organization=gym, hostname=f"owner-{slug}.test", verified_at=timezone.now())
+        client = Client(HTTP_HOST=domain.hostname)
+        response = client.post("/accounts/login/", {
+            "username": owner.username, "password": account["owner-password1"]
+        })
+        self.assertEqual(response["Location"], "/manage/")
+        self.assertContainsText(client.get("/manage/"), "Customize website")
+        self.assertEqual(client.get("/admin/").status_code, 404)
+
+    def test_platform_can_create_owner_for_existing_gym(self):
+        self.assertEqual(self.client.get(f"/gyms/{self.a.slug}/owners/new/").status_code, 403)
+        self.user.is_superuser = True
+        self.user.save()
+        data = {"username": f"extra-{uuid4().hex}", "email": "extra@example.com",
+                "password1": "GymOwner-Strong-84!", "password2": "GymOwner-Strong-84!"}
+        response = self.client.post(f"/gyms/{self.a.slug}/owners/new/", data)
+        self.assertEqual(response.status_code, 302)
+        owner = get_user_model().objects.get(username=data["username"])
+        self.assertFalse(owner.is_staff or owner.is_superuser)
+        self.assertTrue(owner.memberships.filter(organization=self.a, role="owner").exists())
+        self.assertFalse(owner.memberships.filter(organization=self.b).exists())
+        self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/owners/new/", data).status_code, 200)
+        self.assertEqual(get_user_model().objects.filter(username=data["username"]).count(), 1)
+
+    def test_invalid_owner_credentials_do_not_create_partial_gym(self):
+        self.user.is_superuser = True
+        self.user.save()
+        account = self.owner_payload()
+        account["owner-password2"] = "mismatch"
+        slug = uuid4().hex
+        response = self.client.post("/gyms/new/", {
+            "name": "Invalid owner", "slug": slug, "primary_color": "#123456", **account,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Organization.objects.filter(slug=slug).exists())
+        self.assertFalse(get_user_model().objects.filter(username=account["owner-username"]).exists())
+        account["owner-password1"] = account["owner-password2"] = "12345678"
+        self.assertEqual(self.client.post("/gyms/new/", {
+            "name": "Weak password", "slug": slug, "primary_color": "#123456", **account,
+        }).status_code, 200)
+        self.assertFalse(Organization.objects.filter(slug=slug).exists())
+
+    def test_anonymous_public_website_uses_shared_template_and_own_content(self):
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        response = client.get("/")
+        self.assertContainsText(response, self.a.name)
+        self.assertContainsText(response, "Train stronger. Live better.")
+        self.assertNotIn(b"Powerhouse", response.content)
+        self.assertNotIn(b"Private address B", response.content)
+        self.assertEqual(client.get("/manage/").status_code, 302)
+        self.assertEqual(client.get("/manage/website/").status_code, 302)
+
+    def test_owner_edits_website_only_in_own_database(self):
+        before_b = WebsiteSettings.objects.using(self.alias_b).get(pk=1).hero_title
+        response = self.tenant_client().post("/manage/website/", self.website_payload(
+            display_name="IronFit by owner", template="studio", primary_color="#567890",
+            hero_title="Made for our community", contact_email="hello@ironfit.test",
+            logo_url="https://images.example.com/logo.png", id=999, organization=self.b.pk,
+            database_key=str(self.b.database_key),
+        ))
+        self.assertEqual(response.status_code, 302)
+        site = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
+        self.assertEqual(site.display_name, "IronFit by owner")
+        self.assertEqual(site.template, "studio")
+        self.assertEqual(WebsiteSettings.objects.using(self.alias_b).get(pk=1).hero_title, before_b)
+        public = Client(HTTP_HOST=self.domain_a.hostname).get("/")
+        self.assertContainsText(public, "Made for our community")
+        self.assertContainsText(public, 'class="studio"')
+        self.assertContainsText(public, "hello@ironfit.test")
+        self.assertNotIn(b"Made for our community", Client(HTTP_HOST=self.domain_b.hostname).get("/").content)
+        login = Client(HTTP_HOST=self.domain_a.hostname).get("/accounts/login/")
+        self.assertContainsText(login, "IronFit by owner")
+        self.assertIn(b"https://images.example.com/logo.png", login.content)
+
+    def test_nonowners_cannot_edit_or_access_owner_dashboard(self):
+        client = self.tenant_client()
+        for role in ("manager", "staff", "member"):
+            Membership.objects.filter(user=self.user, organization=self.a).update(role=role)
+            for path in ("/manage/", "/manage/website/"):
+                self.assertEqual(client.get(path).status_code, 404)
+            self.assertEqual(client.post("/manage/website/", self.website_payload(hero_title="Forbidden")).status_code, 404)
+        self.assertNotEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title, "Forbidden")
+
+    def test_owner_cannot_edit_other_gym_even_with_superuser_flag(self):
+        self.user.is_superuser = True
+        self.user.save()
+        other = self.tenant_client(self.domain_b)
+        self.assertEqual(other.get("/manage/").status_code, 404)
+        self.assertEqual(other.post("/manage/website/", self.website_payload(hero_title="Forbidden")).status_code, 404)
+        Membership.objects.filter(user=self.user, organization=self.a).update(is_active=False)
+        self.assertEqual(self.tenant_client().post("/manage/website/", self.website_payload()).status_code, 404)
+
+    def test_invalid_customization_does_not_save_or_change_page_branding(self):
+        original = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
+        for changes in ({"primary_color": "red;}body{display:none"},
+                        {"logo_url": "javascript:alert(1)"},
+                        {"hero_image_url": "http://insecure.example.com/image.png"},
+                        {"template": "../../other_template"}):
+            response = self.tenant_client().post("/manage/website/", self.website_payload(**changes))
+            self.assertEqual(response.status_code, 200)
+            site = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
+            self.assertEqual(site.primary_color, original.primary_color)
+            self.assertEqual(site.template, original.template)
+            self.assertIn(f"background:{original.primary_color}".encode(), response.content)
+
+    def test_website_text_is_escaped_in_public_template(self):
+        self.tenant_client().post("/manage/website/", self.website_payload(
+            hero_title='<script>alert("x")</script>', about_text='<img src=x onerror=alert(1)>'
+        ))
+        response = Client(HTTP_HOST=self.domain_a.hostname).get("/")
+        self.assertContainsText(response, "&lt;script&gt;")
+        self.assertNotIn(b"<script>", response.content)
+        self.assertNotIn(b"<img src=x", response.content)
+
+    def test_reprovision_and_template_switch_preserve_customizations(self):
+        self.tenant_client().post("/manage/website/", self.website_payload(hero_title="Keep my edits"))
+        provision_database(self.a)
+        self.assertEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title, "Keep my edits")
+        self.tenant_client().post("/manage/website/", self.website_payload(template="studio"))
+        self.assertEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title, "Keep my edits")
+        with self.assertRaises(IntegrityError):
+            WebsiteSettings.objects.using(self.alias_a).create(pk=2, display_name="Not allowed")
+
+    def test_existing_gym_upgrade_initializes_website_and_preserves_branches(self):
+        # Emulate a gym created before the websites app introduced its first schema.
+        from django.db.migrations.recorder import MigrationRecorder
+        with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(WebsiteSettings)
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="websites").delete()
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/").status_code, 503)
+        call_command("migrate_gym_databases", slug=self.a.slug, verbosity=0)
+        site = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
+        self.assertEqual(site.display_name, self.a.name)
+        self.assertEqual(Location.objects.using(self.alias_a).get(pk=self.branch_a.pk).address, "Address A")
+        self.assertContainsText(Client(HTTP_HOST=self.domain_a.hostname).get("/"), self.a.name)
+
+    def test_website_editor_requires_same_origin_csrf(self):
+        client = self.tenant_client(csrf=True)
+        client.get("/manage/website/")
+        data = self.website_payload(hero_title="Same-origin edit")
+        self.assertEqual(client.post("/manage/website/", data).status_code, 403)
+        data["csrfmiddlewaretoken"] = client.cookies["csrftoken"].value
+        self.assertEqual(client.post("/manage/website/", data,
+            HTTP_ORIGIN=f"http://{self.domain_b.hostname}").status_code, 403)
+        self.assertEqual(client.post("/manage/website/", data,
+            HTTP_ORIGIN=f"http://{self.domain_a.hostname}").status_code, 302)
 
 
 if __name__ == "__main__":

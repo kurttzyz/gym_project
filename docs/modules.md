@@ -20,7 +20,7 @@ gym_core/                        Tenant operational application
   attendance/                    Planned check-ins and QR attendance
   staff/                         Planned employee roles and permissions
   trainers/                      Planned trainers
-  urls.py, views.py              Existing authenticated gym portal
+  urls.py, views.py              Existing gym member portal and owner dashboard
 tenant_data/                     Existing tenant branch model and migrations
 pos/                             Tenant application
   products/                      Planned product catalog
@@ -32,9 +32,10 @@ payments/                        Tenant member-to-gym payment application
   invoices/                      Planned member/POS invoices
   webhooks/                      Planned verified/idempotent callbacks
 websites/                        White-label presentation application
-  templates/                     Existing shared brand-aware portal templates
+  templates/                     Shared public website, owner editor, and portal templates
   branding.py                    Existing request-scoped branding
-  public_pages/                  Planned public gym websites
+  public_pages/                  Public-website module boundary
+  models.py, views.py             Tenant website settings, public site, owner editor
 tenants/                         Existing hostname-to-tenant middleware
 config/                          Router/admin infrastructure and compatibility imports
 ```
@@ -56,8 +57,8 @@ The router sends `tenant_data`, `gym_core`, `pos`, `payments`, and `websites` to
 an explicitly authorized gym database and refuses queries outside a tenant scope.
 Their migrations are blocked on `default`. New business models must be defined
 or imported through their Django app's models module so migration discovery sees
-them. Central/tenant foreign keys are prohibited. No schema migrations are needed
-for the structural move; existing model labels/table names are deliberately retained.
+them. Central/tenant foreign keys are prohibited. Existing model labels/table names are deliberately retained. WebsiteSettings has
+its own tenant-only migration and is initialized when each gym database is migrated.
 `migrate_gym_databases` applies the full migration graph on each gym connection;
 the router creates only tenant app tables there. Migration history rows may include
 skipped central apps, but central business tables are never created in gym databases.
@@ -91,9 +92,8 @@ explicit commercial agreement; no split payments are assumed.
 
 Current platform URLs belong to `platform_core` and require a platform superuser.
 Current gym portal URLs belong to `gym_core` and require an active gym membership.
-`websites` owns shared presentation and per-gym branding. The next interface phases
-are a public website, an authenticated member portal, and role-restricted gym-owner
-management/staff POS. These should share tenant-local records and services, not
+`websites` owns shared presentation and per-gym branding. Public websites, member portals, and owner website customization are implemented.
+Staff POS and further gym-owner business management remain planned. These should share tenant-local records and services, not
 separate code copies. Owner/manager/staff/member role names already exist, but
 business module permissions must be explicitly implemented before enabling writes.
 
@@ -102,3 +102,6 @@ must be scoped by immutable gym UUID. Future Celery jobs must resolve a registry
 tenant and enter a fresh database context; they must not inherit a request context.
 Payment processing and background scheduling must not begin until the relevant
 provider credentials, signed webhook flow, retry policies, and services are configured.
+
+
+Owner account creation and website settings are documented in [owner websites](owner-websites.md).

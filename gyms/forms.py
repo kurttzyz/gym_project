@@ -1,5 +1,6 @@
 from django import forms
-from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
+from django.contrib.auth import get_user_model
 from .models import GymDomain, Membership, Organization, normalize_hostname
 
 
@@ -29,3 +30,19 @@ class PortalAuthenticationForm(AuthenticationForm):
         if not allowed:
             raise forms.ValidationError(self.error_messages["invalid_login"], code="invalid_login",
                                         params={"username": self.username_field.verbose_name})
+
+
+class OwnerAccountForm(UserCreationForm):
+    email = forms.EmailField(required=True)
+
+    class Meta(UserCreationForm.Meta):
+        model = get_user_model()
+        fields = ("username", "email")
+
+    def save(self, commit=True):
+        user = super().save(commit=False)
+        user.is_staff = False
+        user.is_superuser = False
+        if commit:
+            user.save()
+        return user

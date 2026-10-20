@@ -4,15 +4,15 @@ import logging
 import psycopg
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from django.db import DatabaseError, connection
+from django.db import DatabaseError, connection, transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
 from config.database_router import gym_database
 from tenant_data.models import Location
 from gyms.databases import GymDatabaseUnavailable, provision_database, ready_database
-from gyms.forms import DomainForm, GymForm
-from gyms.models import Organization
+from gyms.forms import DomainForm, GymForm, OwnerAccountForm
+from gyms.models import Membership, Organization
 
 
 def platform_required(view):
@@ -47,15 +47,21 @@ def dashboard(request):
 @platform_required
 def add_gym(request):
     form = GymForm(request.POST if request.method == "POST" else None)
-    if request.method == "POST" and form.is_valid():
-        gym = form.save()
+    owner_form = OwnerAccountForm(request.POST if request.method == "POST" else None, prefix="owner")
+    if request.method == "POST" and all([form.is_valid(), owner_form.is_valid()]):
+        # Central records commit together; tenant provisioning is retryable and
+        # cannot share an atomic transaction with a separate PostgreSQL database.
+        with transaction.atomic():
+            gym = form.save()
+            owner = owner_form.save()
+            Membership.objects.create(organization=gym, user=owner, role=Membership.Role.OWNER)
         try:
             provision_database(gym)
         except (GymDatabaseUnavailable, DatabaseError, psycopg.Error, OSError):
             logging.getLogger(__name__).exception("Gym provisioning failed for %s", gym.pk)
             return render(request, "gyms/unavailable.html", status=503)
         return redirect("gym-detail", slug=gym.slug)
-    return render(request, "gyms/add.html", {"form": form})
+    return render(request, "gyms/add.html", {"form": form, "owner_form": owner_form})
 
 
 @platform_required
@@ -70,6 +76,7 @@ def gym_detail(request, slug):
     return render(request, "gyms/detail.html", {
         "gym": gym, "branches": branches, "domain_form": DomainForm(),
         "domains": gym.domains.all(),
+        "owners": gym.memberships.filter(role=Membership.Role.OWNER).select_related("user"),
     })
 
 
@@ -88,3 +95,15 @@ def add_domain(request, slug):
         "gym": gym, "domains": gym.domains.all(), "domain_form": form,
         "branches": [],
     }, status=400)
+
+
+@platform_required
+def add_owner(request, slug):
+    gym = get_object_or_404(Organization, slug=slug)
+    form = OwnerAccountForm(request.POST if request.method == "POST" else None)
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            owner = form.save()
+            Membership.objects.create(organization=gym, user=owner, role=Membership.Role.OWNER)
+        return redirect("gym-detail", slug=gym.slug)
+    return render(request, "gyms/add_owner.html", {"gym": gym, "form": form})
