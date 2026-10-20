@@ -34,17 +34,24 @@ branch administration is not exposed through the central admin.
 
 ## Structure
 
-- `config/`: settings, routes, entry points, fail-closed database router.
-- `accounts/`: shared platform user identity.
-- `gyms/`: registry, access memberships, provisioning, dashboard, and authorization.
-- `tenant_data/`: operational models and migrations stored in each gym database.
-- `scripts/`: local environment generation and central PostgreSQL bootstrap.
-- `tests/`: integration tests against isolated real PostgreSQL databases.
+- `platform_config/`: canonical settings, platform URLs, ASGI and WSGI.
+- `platform_core/`: platform onboarding/dashboard; SaaS plans and billing boundaries.
+- `gym_core/`: tenant portal; members, paid memberships, attendance, staff, trainers boundaries.
+- `pos/`: product, inventory, and sales boundaries.
+- `payments/`: tenant payment boundaries and provider-neutral adapter contract.
+- `websites/`: shared brand-aware templates, branding, public-page boundary.
+- `tenants/`: verified custom-domain resolution; no copied code per gym.
+- `accounts/`, `gyms/`, `tenant_data/`: existing migration-stable identity, registry,
+  access, and branch models.
+- `config/`: router/admin infrastructure and compatibility entry points.
+
+See [module architecture and billing boundaries](docs/modules.md) for implemented
+versus planned capabilities. One platform serves all gyms; gym-to-platform SaaS
+billing and member-to-gym billing are separate domains and data stores.
 
 A gym (`Organization`) is a tenant; a `Location` is a branch in its database.
-Membership roles are owner, manager, staff, and member. Roles are stored for future
-write authorization; they do not currently grant additional API capabilities.
-Access memberships are separate from future paid subscriptions.
+Membership roles are owner, manager, staff, and member. These access memberships
+are separate from planned paid gym subscriptions.
 
 ## Endpoints
 
@@ -124,7 +131,8 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes one subprocess integration suite containing 20 checks.
+The Django runner executes a subprocess integration suite containing 20 checks
+and two direct database-routing boundary tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
 and PostgreSQL connection privileges, then removes only its own databases/roles.

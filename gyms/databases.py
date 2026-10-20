@@ -57,7 +57,7 @@ def provision_database(gym):
     alias, name = register_database(gym)
     config = connections.databases[alias]
     create_database(name, config["USER"], config["PASSWORD"], require_existing=gym.database_ready)
-    call_command("migrate", "tenant_data", database=alias, interactive=False, verbosity=0)
+    call_command("migrate", database=alias, interactive=False, verbosity=0)
     type(gym).objects.filter(pk=gym.pk).update(database_ready=True)
     gym.database_ready = True
     return alias

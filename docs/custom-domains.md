@@ -101,6 +101,6 @@ both secure. Keep CSRF origin checks enabled. No wildcard CSRF origins are added
 For a TLS-terminating proxy, configure Django's secure-proxy header only if the
 trusted proxy strips incoming spoofed headers and sets that header itself.
 
-Tenant-owned operational features should live under `config.tenant_urls`, check
+Tenant-owned operational features should live under `gym_core.urls`, check
 request.tenant membership, and use an explicit authorized gym_database context.
-Platform control-plane views belong under config.urls and require a superuser.
+Platform control-plane views belong under platform_config.urls and require a superuser.

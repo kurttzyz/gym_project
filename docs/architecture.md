@@ -101,8 +101,8 @@ runtime persistence and does not establish fresh cloud-task restoration.
 The central GymDomain registry binds immutable normalized hostnames to gyms, with
 random DNS TXT challenges, verification timestamps, and an active flag. Unknown or
 unverified domains fail closed. First-position host middleware sets request.tenant
-and selects either the platform URLconf or the tenant URLconf before authentication.
-Platform provisioning/admin routes do not exist in the tenant URLconf. Tenant login
+and selects either the platform URLconf or the gym_core tenant URLconf before authentication.
+Platform provisioning/admin routes do not exist in the gym_core tenant URLconf. Tenant login
 and dashboard access require active membership, including for platform superusers.
 A request cannot select its gym through a URL slug, query string, or forwarded host.
 
@@ -111,3 +111,7 @@ including on login and database-unavailable pages. Platform pages use Powerhouse
 Cookies remain host-only and CSRF remains same-origin. Platform identity/access
 records are intentionally central; operational data remains per-gym PostgreSQL.
 See [domain setup](custom-domains.md) for DNS verification, TLS, and local testing.
+
+
+Canonical runtime settings are in `platform_config`. See [module boundaries](modules.md)
+for the control plane, gym operations, POS, payment, and website packages.

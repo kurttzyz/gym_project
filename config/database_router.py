@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from django.core.exceptions import ImproperlyConfigured
+from django.conf import settings
 
 _current_database = ContextVar("gym_database", default=None)
 
@@ -18,7 +19,7 @@ def gym_database(alias):
 
 class GymDatabaseRouter:
     def db_for_read(self, model, **hints):
-        if model._meta.app_label == "tenant_data":
+        if model._meta.app_label in settings.TENANT_APP_LABELS:
             alias = _current_database.get()
             if alias is None:
                 raise ImproperlyConfigured("Select an authorized gym database first")
@@ -31,6 +32,6 @@ class GymDatabaseRouter:
         return obj1._state.db == obj2._state.db
 
     def allow_migrate(self, db, app_label, **hints):
-        if app_label == "tenant_data":
+        if app_label in settings.TENANT_APP_LABELS:
             return db.startswith("gym_")
         return db == "default"

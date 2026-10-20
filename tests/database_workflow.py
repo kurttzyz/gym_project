@@ -7,7 +7,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "platform_config.settings")
 import django
 django.setup()
 import psycopg
@@ -124,7 +124,7 @@ class GymDatabaseTests(unittest.TestCase):
             Location.objects.count()
 
     def test_unauthorized_gym_is_denied_before_database_lookup(self):
-        with patch("gyms.views.ready_database") as lookup:
+        with patch("gym_core.views.ready_database") as lookup:
             self.assertEqual(self.tenant_client(self.domain_b).get("/").status_code, 404)
             lookup.assert_not_called()
         response = self.tenant_client().get("/")
@@ -183,7 +183,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.user.is_superuser = True
         self.user.save()
         slug = uuid4().hex
-        with patch("gyms.views.provision_database", side_effect=DatabaseError("unavailable")):
+        with patch("platform_core.views.provision_database", side_effect=DatabaseError("unavailable")):
             self.assertEqual(self.client.post("/gyms/new/", {"name": "Retry", "slug": slug, "primary_color": "#245ac5"}).status_code, 503)
         gym = Organization.objects.get(slug=slug)
         self.assertFalse(gym.database_ready)
