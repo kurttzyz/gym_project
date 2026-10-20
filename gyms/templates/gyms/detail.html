@@ -1,0 +1,1 @@
+{% extends "gyms/base.html" %}{% block content %}<p><a href="{% url 'dashboard' %}">All your gyms</a></p><h1>{{ gym.name }}</h1><h2>Branches</h2><div class="grid">{% for branch in branches %}<article class="card"><h3>{{ branch.name }}</h3><p>{{ branch.address }}</p></article>{% empty %}<p>No branches added yet.</p>{% endfor %}</div>{% endblock %}

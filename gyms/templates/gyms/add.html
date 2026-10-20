@@ -1,0 +1,1 @@
+{% extends "gyms/base.html" %}{% block content %}<h1>Add a gym</h1><p>Create an independent tenant. Assign its owner through platform administration.</p><form class="card" method="post">{% csrf_token %}{{ form.as_p }}<button>Create gym</button></form>{% endblock %}
