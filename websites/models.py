@@ -33,3 +33,15 @@ class WebsiteSettings(models.Model):
 
     def __str__(self):
         return self.display_name
+
+
+class ContactMessage(models.Model):
+    full_name = models.CharField(max_length=160)
+    email = models.EmailField()
+    subject = models.CharField(max_length=160)
+    message = models.TextField(max_length=3000)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "id"]

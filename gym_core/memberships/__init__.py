@@ -1,1 +1,1 @@
-"""Future gym-priced member subscriptions, separate from central access memberships."""
+"""Tenant membership plans and applications; paid enrollment remains separate."""

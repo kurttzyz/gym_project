@@ -28,7 +28,9 @@ from django.core.management.base import CommandError
 from django.core.exceptions import ValidationError
 from types import SimpleNamespace
 from tenant_data.models import Location
-from websites.models import WebsiteSettings
+from websites.models import ContactMessage, WebsiteSettings
+from gym_core.memberships.models import MembershipApplication, MembershipPlan
+from decimal import Decimal
 from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
@@ -72,6 +74,11 @@ class GymDatabaseTests(unittest.TestCase):
             organization=self.b, hostname=f"b-{token}.test", verified_at=timezone.now()
         )
 
+    def tearDown(self):
+        # Each scenario owns fresh gym databases; release sockets before the next
+        # scenario rather than exhausting PostgreSQL's server-wide connection cap.
+        connections.close_all()
+
     def tenant_client(self, domain=None, csrf=False):
         client = Client(HTTP_HOST=(domain or self.domain_a).hostname, enforce_csrf_checks=csrf)
         client.force_login(self.user)
@@ -87,6 +94,18 @@ class GymDatabaseTests(unittest.TestCase):
     def website_payload(self, **updates):
         site = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
         data = model_to_dict(site, fields=WebsiteSettingsForm._meta.fields)
+        data.update(updates)
+        return data
+
+    def plan(self, alias=None, **updates):
+        data = {"name": "Standard membership", "price": Decimal("1250.50"),
+                "period": "month", "features": "Gym access\nPersonal training enquiries"}
+        data.update(updates)
+        return MembershipPlan.objects.using(alias or self.alias_a).create(**data)
+
+    def application_payload(self, plan, **updates):
+        data = {"plan": str(plan.pk), "full_name": "Jamie Applicant", "email": "jamie@example.com",
+                "phone": "09170000000", "message": "I would like to get started.", "consent": "on"}
         data.update(updates)
         return data
 
@@ -108,10 +127,14 @@ class GymDatabaseTests(unittest.TestCase):
                 self.assertEqual(cursor.fetchone(), (alias, alias))
         self.assertNotIn("tenant_data_location", connection.introspection.table_names())
         self.assertNotIn("websites_websitesettings", connection.introspection.table_names())
+        self.assertNotIn("gym_core_membershipplan", connection.introspection.table_names())
+        self.assertNotIn("gym_core_membershipapplication", connection.introspection.table_names())
         for alias in (self.alias_a, self.alias_b):
             tables = connections[alias].introspection.table_names()
             self.assertIn("tenant_data_location", tables)
             self.assertIn("websites_websitesettings", tables)
+            self.assertIn("gym_core_membershipplan", tables)
+            self.assertIn("gym_core_membershipapplication", tables)
             self.assertNotIn("accounts_user", tables)
             self.assertNotIn("gyms_membership", tables)
 
@@ -494,6 +517,7 @@ class GymDatabaseTests(unittest.TestCase):
         # Emulate a gym created before the websites app introduced its first schema.
         from django.db.migrations.recorder import MigrationRecorder
         with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(ContactMessage)
             editor.delete_model(WebsiteSettings)
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="websites").delete()
         self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/").status_code, 503)
@@ -711,6 +735,213 @@ class GymDatabaseTests(unittest.TestCase):
             self.assertNotIn(b"Enable local portal", response.content)
             self.assertNotIn(f'http://{self.a.slug}.localhost'.encode(), response.content)
             self.assertEqual(remote.post(f"/gyms/{self.a.slug}/local-portal/").status_code, 403)
+
+
+    def test_full_public_membership_website_pages_are_branded_and_accessible(self):
+        plan = self.plan()
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        for path in ("/", "/about/", "/memberships/", "/contact/", "/join/", f"/join/?plan={plan.pk}"):
+            response = client.get(path)
+            self.assertContainsText(response, self.a.name)
+            self.assertNotIn(b"Powerhouse", response.content)
+            self.assertIn(b"/memberships/", response.content)
+            self.assertIn(b"/contact/", response.content)
+
+    def test_only_published_gym_plans_and_precise_prices_are_public(self):
+        self.plan(name="Public plan", is_featured=True)
+        self.plan(name="Private draft", is_active=False)
+        self.plan(self.alias_b, name="Other gym plan")
+        response = Client(HTTP_HOST=self.domain_a.hostname).get("/memberships/")
+        self.assertContainsText(response, "Public plan")
+        self.assertIn("₱1250.50".encode(), response.content)
+        self.assertNotIn(b"Private draft", response.content)
+        self.assertNotIn(b"Other gym plan", response.content)
+
+    def test_owner_creates_edits_and_hides_membership_plan(self):
+        client = self.tenant_client()
+        data = {"name": "Owner plan", "description": "Our plan", "price": "1500.25", "period": "month",
+                "features": "Weights\nGym access", "is_active": "on", "is_featured": "on", "sort_order": "0"}
+        self.assertEqual(client.post("/manage/plans/new/", data).status_code, 302)
+        plan = MembershipPlan.objects.using(self.alias_a).get(name="Owner plan")
+        self.assertEqual(plan.price, Decimal("1500.25"))
+        self.assertEqual(MembershipPlan.objects.using(self.alias_b).count(), 0)
+        self.assertContainsText(Client(HTTP_HOST=self.domain_a.hostname).get("/memberships/"), "Owner plan")
+        data.pop("is_active")
+        data["name"] = "Hidden owner plan"
+        self.assertEqual(client.post(f"/manage/plans/{plan.pk}/", data).status_code, 302)
+        self.assertNotIn(b"Hidden owner plan", Client(HTTP_HOST=self.domain_a.hostname).get("/memberships/").content)
+
+    def test_membership_management_requires_active_owner(self):
+        plan = self.plan()
+        for role in ("member", "staff", "manager"):
+            Membership.objects.filter(user=self.user, organization=self.a).update(role=role)
+            for path in ("/manage/plans/", "/manage/plans/new/", f"/manage/plans/{plan.pk}/",
+                         "/manage/applications/", "/manage/inbox/"):
+                self.assertEqual(self.tenant_client().get(path).status_code, 404)
+        self.assertEqual(self.tenant_client(self.domain_b).get("/manage/plans/").status_code, 404)
+
+    def test_membership_request_is_tenant_local_with_server_quoted_price(self):
+        plan = self.plan()
+        users_before = get_user_model().objects.count()
+        response = Client(HTTP_HOST=self.domain_a.hostname).post("/join/", self.application_payload(
+            plan, quoted_price="1.00", quoted_plan_name="Tampered", status="approved", organization=self.b.pk
+        ))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/join/thanks/")
+        application = MembershipApplication.objects.using(self.alias_a).get()
+        self.assertEqual(application.quoted_price, Decimal("1250.50"))
+        self.assertEqual(application.quoted_plan_name, plan.name)
+        self.assertEqual(application.status, "new")
+        self.assertEqual(MembershipApplication.objects.using(self.alias_b).count(), 0)
+        self.assertEqual(users_before, get_user_model().objects.count())
+        receipt = Client(HTTP_HOST=self.domain_a.hostname).get(response["Location"])
+        self.assertNotIn(b"jamie@example.com", receipt.content)
+
+    def test_join_rejects_other_gym_inactive_and_malformed_plan_identifiers(self):
+        other = self.plan(self.alias_b)
+        hidden = self.plan(is_active=False)
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        for plan in (other, hidden):
+            self.assertEqual(client.get(f"/join/?plan={plan.pk}").status_code, 404)
+            self.assertEqual(client.post("/join/", self.application_payload(plan)).status_code, 200)
+        self.assertEqual(client.get("/join/?plan=not-a-uuid").status_code, 404)
+        self.assertEqual(MembershipApplication.objects.using(self.alias_a).count(), 0)
+
+    def test_duplicate_pending_application_is_prevented_case_insensitively(self):
+        plan = self.plan()
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        self.assertEqual(client.post("/join/", self.application_payload(plan)).status_code, 302)
+        response = client.post("/join/", self.application_payload(plan, email="JAMIE@example.com"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MembershipApplication.objects.using(self.alias_a).count(), 1)
+        application = MembershipApplication.objects.using(self.alias_a).get()
+        application.status = "declined"
+        application.save(using=self.alias_a)
+        self.assertEqual(client.post("/join/", self.application_payload(plan)).status_code, 302)
+
+    def test_plan_edits_preserve_historical_application_quote(self):
+        plan = self.plan()
+        Client(HTTP_HOST=self.domain_a.hostname).post("/join/", self.application_payload(plan))
+        MembershipPlan.objects.using(self.alias_a).filter(pk=plan.pk).update(name="Changed", price=Decimal("9000"), is_active=False)
+        application = MembershipApplication.objects.using(self.alias_a).get()
+        self.assertEqual(application.quoted_plan_name, "Standard membership")
+        self.assertEqual(application.quoted_price, Decimal("1250.50"))
+        self.assertContainsText(self.tenant_client().get("/manage/applications/"), "Standard membership")
+
+    def test_owner_reviews_application_without_creating_paid_membership(self):
+        plan = self.plan()
+        Client(HTTP_HOST=self.domain_a.hostname).post("/join/", self.application_payload(plan))
+        application = MembershipApplication.objects.using(self.alias_a).get()
+        users_before = get_user_model().objects.count()
+        client = self.tenant_client()
+        path = f"/manage/applications/{application.pk}/review/"
+        self.assertEqual(client.post(path, {"status": "contacted"}).status_code, 302)
+        self.assertEqual(client.post(path, {"status": "approved"}).status_code, 302)
+        self.assertEqual(client.post(path, {"status": "declined"}).status_code, 302)
+        application.refresh_from_db(using=self.alias_a)
+        self.assertEqual(application.status, "approved")
+        self.assertEqual(users_before, get_user_model().objects.count())
+
+    def test_application_uuid_cannot_be_reviewed_from_other_gym(self):
+        plan = self.plan(self.alias_b)
+        Client(HTTP_HOST=self.domain_b.hostname).post("/join/", self.application_payload(plan))
+        application = MembershipApplication.objects.using(self.alias_b).get()
+        self.assertEqual(self.tenant_client().post(f"/manage/applications/{application.pk}/review/", {
+            "status": "approved"
+        }).status_code, 404)
+        self.assertNotIn(b"jamie@example.com", self.tenant_client().get("/manage/applications/").content)
+        application.refresh_from_db(using=self.alias_b)
+        self.assertEqual(application.status, "new")
+
+    def test_contact_messages_reach_only_own_gym_private_inbox(self):
+        data = {"full_name": "Casey Visitor", "email": "casey@example.com", "subject": "Visiting",
+                "message": "When can I visit?", "consent": "on"}
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        response = client.post("/contact/", data)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(ContactMessage.objects.using(self.alias_a).count(), 1)
+        self.assertEqual(ContactMessage.objects.using(self.alias_b).count(), 0)
+        self.assertNotIn(b"casey@example.com", client.get(response["Location"]).content)
+        self.assertEqual(client.get("/manage/inbox/").status_code, 302)
+        self.assertContainsText(self.tenant_client().get("/manage/inbox/"), "casey@example.com")
+
+    def test_contact_and_join_validate_consent_and_honeypot(self):
+        plan = self.plan()
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        data = self.application_payload(plan)
+        data.pop("consent")
+        self.assertEqual(client.post("/join/", data).status_code, 200)
+        self.assertEqual(client.post("/join/", self.application_payload(plan, website_url="https://spam.example.com")).status_code, 200)
+        contact = {"full_name": "Bot", "email": "bot@example.com", "subject": "Hi", "message": "Hi"}
+        self.assertEqual(client.post("/contact/", contact).status_code, 200)
+        self.assertEqual(client.post("/contact/", {**contact, "consent": "on", "website_url": "spam"}).status_code, 200)
+        self.assertEqual(MembershipApplication.objects.using(self.alias_a).count(), 0)
+        self.assertEqual(ContactMessage.objects.using(self.alias_a).count(), 0)
+
+    def test_public_forms_require_same_origin_csrf(self):
+        plan = self.plan()
+        client = Client(HTTP_HOST=self.domain_a.hostname, enforce_csrf_checks=True)
+        client.get("/join/")
+        data = self.application_payload(plan)
+        self.assertEqual(client.post("/join/", data).status_code, 403)
+        data["csrfmiddlewaretoken"] = client.cookies["csrftoken"].value
+        self.assertEqual(client.post("/join/", data, HTTP_ORIGIN=f"http://{self.domain_b.hostname}").status_code, 403)
+        self.assertEqual(client.post("/join/", data, HTTP_ORIGIN=f"http://{self.domain_a.hostname}").status_code, 302)
+        self.assertEqual(client.post("/contact/", {}).status_code, 403)
+
+    def test_owner_dashboard_counts_and_inbox_read_action(self):
+        plan = self.plan()
+        Client(HTTP_HOST=self.domain_a.hostname).post("/join/", self.application_payload(plan))
+        message = ContactMessage.objects.using(self.alias_a).create(full_name="Hi", email="hi@example.com", subject="Question", message="Hello")
+        response = self.tenant_client().get("/manage/")
+        self.assertContainsText(response, "Manage memberships")
+        self.assertContainsText(response, "Review applications")
+        self.assertEqual(self.tenant_client().post(f"/manage/inbox/{message.pk}/read/").status_code, 302)
+        message.refresh_from_db(using=self.alias_a)
+        self.assertTrue(message.is_read)
+
+    def test_owner_review_requires_post_and_valid_transition(self):
+        plan = self.plan()
+        Client(HTTP_HOST=self.domain_a.hostname).post("/join/", self.application_payload(plan))
+        application = MembershipApplication.objects.using(self.alias_a).get()
+        path = f"/manage/applications/{application.pk}/review/"
+        client = self.tenant_client()
+        self.assertEqual(client.get(path).status_code, 405)
+        self.assertEqual(client.post(path, {"status": "paid"}).status_code, 400)
+        application.refresh_from_db(using=self.alias_a)
+        self.assertEqual(application.status, "new")
+
+    def test_plan_price_validation_and_untrusted_text_are_safe(self):
+        client = self.tenant_client()
+        self.assertEqual(client.post("/manage/plans/new/", {
+            "name": "Invalid", "price": "-1", "period": "month", "sort_order": "0", "is_active": "on"
+        }).status_code, 200)
+        self.assertFalse(MembershipPlan.objects.using(self.alias_a).filter(name="Invalid").exists())
+        self.plan(name='<script>alert("plan")</script>')
+        response = Client(HTTP_HOST=self.domain_a.hostname).get("/memberships/")
+        self.assertIn(b"&lt;script&gt;", response.content)
+        self.assertNotIn(b"<script>", response.content)
+        ContactMessage.objects.using(self.alias_a).create(full_name="Hi", email="hi@example.com", subject="Question", message="<script>alert(1)</script>")
+        self.assertNotIn(b"<script>", client.get("/manage/inbox/").content)
+
+
+    def test_old_gym_installs_membership_module_from_setup_button_without_losing_branding(self):
+        from django.db.migrations.recorder import MigrationRecorder
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
+        with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(MembershipApplication)
+            editor.delete_model(MembershipPlan)
+            editor.delete_model(ContactMessage)
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core").delete()
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="websites", name="0002_contactmessage").delete()
+        self.user.is_superuser = True
+        self.user.save()
+        self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"), "Retry setup")
+        self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/retry-setup/").status_code, 302)
+        self.assertEqual(MembershipPlan.objects.using(self.alias_a).count(), 0)
+        self.assertEqual(ContactMessage.objects.using(self.alias_a).count(), 0)
+        self.assertEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title, "Keep existing brand")
+        self.assertContainsText(Client(HTTP_HOST=self.domain_a.hostname).get("/"), "Keep existing brand")
 
 
 if __name__ == "__main__":

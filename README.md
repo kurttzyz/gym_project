@@ -66,8 +66,9 @@ are separate from planned paid gym subscriptions.
 
 Owner website editing is available at `/manage/website/` and the owner dashboard
 at `/manage/` on each gym domain. Member portals are at `/portal/`. Self-service
-signup, branch editing, billing, plans, attendance, and business transaction APIs
-are not implemented yet. See [architecture](docs/architecture.md).
+signup, branch editing, payment collection, attendance, and POS transactions
+are not implemented yet. Gym membership plans, applications, and contact inboxes
+are implemented; approval is not paid membership activation. See [architecture](docs/architecture.md).
 
 ## Configuration and security
 
@@ -134,7 +135,7 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 43 checks
+The Django runner executes a subprocess integration suite containing 60 checks
 and two direct database-routing boundary tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
@@ -174,3 +175,11 @@ Use Add another gym to create IronFit and Titans with their respective owners.
 Both automatically receive separate databases, websites, and local portals. Follow
 the [two-gym walkthrough](docs/demo.md). No demo scripts are needed. If provisioning
 fails or an older gym lacks its website schema, use Retry setup on its detail page.
+
+## Membership website
+
+Gym domains include Home, Memberships, Our gym, Contact, and Join pages. Owners
+create and publish their own PHP-priced plans at `/manage/plans/`, review requests
+at `/manage/applications/`, and read messages at `/manage/inbox/`. Plan requests
+are inquiries, not charges or automatic account activation. See the complete
+[membership website workflow](docs/membership-website.md).

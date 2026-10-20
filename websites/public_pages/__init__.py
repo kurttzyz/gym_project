@@ -1,1 +1,1 @@
-"""Public website rendering is implemented in websites.views.homepage."""
+"""Branded public website pages, membership requests, and contact forms."""

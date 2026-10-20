@@ -1,5 +1,5 @@
 from django import forms
-from .models import WebsiteSettings
+from .models import ContactMessage, WebsiteSettings
 
 
 class WebsiteSettingsForm(forms.ModelForm):
@@ -22,3 +22,18 @@ class WebsiteSettingsForm(forms.ModelForm):
             "hero_image_url": "Optional HTTPS URL to your main website photo.",
             "template": "Layouts share the same content; switching preserves your edits.",
         }
+
+
+class ContactForm(forms.ModelForm):
+    consent = forms.BooleanField(label="I agree that this gym may contact me about this message.")
+    website_url = forms.CharField(required=False, widget=forms.HiddenInput)
+
+    class Meta:
+        model = ContactMessage
+        fields = ("full_name", "email", "subject", "message")
+        widgets = {"message": forms.Textarea(attrs={"rows": 5})}
+
+    def clean_website_url(self):
+        if self.cleaned_data.get("website_url"):
+            raise forms.ValidationError("Please leave this field blank.")
+        return ""

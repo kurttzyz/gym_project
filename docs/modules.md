@@ -16,7 +16,7 @@ accounts/                        Central identities/authentication (existing)
 gyms/                            Central registry, domain/access models (existing)
 gym_core/                        Tenant operational application
   members/                       Planned gym member records
-  memberships/                   Planned gym-priced member subscriptions
+  memberships/                   Published plans, applications, owner review; paid activation planned
   attendance/                    Planned check-ins and QR attendance
   staff/                         Planned employee roles and permissions
   trainers/                      Planned trainers
@@ -34,15 +34,16 @@ payments/                        Tenant member-to-gym payment application
 websites/                        White-label presentation application
   templates/                     Shared public website, owner editor, and portal templates
   branding.py                    Existing request-scoped branding
-  public_pages/                  Public-website module boundary
+  public_pages/                  Home, memberships, about, contact, and join pages
   models.py, views.py             Tenant website settings, public site, owner editor
 tenants/                         Existing hostname-to-tenant middleware
 config/                          Router/admin infrastructure and compatibility imports
 ```
 
 Domain folders marked Planned are architectural boundaries, not implemented
-business features. They currently contain package descriptions; there are no
-working billing, POS, recurring collection, or attendance flows yet. Subscription
+business features. Billing, POS, recurring payment collection, and attendance
+remain planned. Gym-priced plan publishing, membership requests, and private contact
+inboxes are implemented; paid subscriptions and activation are not. Subscription
 prices (such as PHP 2,999 SaaS and PHP 1,000 gym membership) are proposed pricing,
 not hardcoded application defaults. Concrete payment providers are not configured.
 Celery/Redis and notification/billing workers are also planned, not running.
@@ -105,3 +106,6 @@ provider credentials, signed webhook flow, retry policies, and services are conf
 
 
 Owner account creation and website settings are documented in [owner websites](owner-websites.md).
+
+
+See [membership website](membership-website.md) for public plans/applications and private owner workflows.

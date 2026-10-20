@@ -9,12 +9,7 @@ from .forms import WebsiteSettingsForm
 from .services import website_for_request
 
 
-def homepage(request):
-    try:
-        site = website_for_request(request)
-    except (GymDatabaseUnavailable, DatabaseError, OSError):
-        return render(request, "gyms/unavailable.html", status=503)
-    return render(request, "websites/home.html", {"site": site})
+from .public_pages.views import home as homepage
 
 
 @owner_required
