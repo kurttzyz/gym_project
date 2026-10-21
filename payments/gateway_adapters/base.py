@@ -1,4 +1,4 @@
-"""Contracts for future providers. No external charges are implemented here."""
+"""Provider-neutral contracts. COPAY deposit operations live in the copay adapter."""
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Mapping, Protocol

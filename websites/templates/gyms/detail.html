@@ -14,4 +14,4 @@
 </section>{% empty %}<p>No domains registered yet.</p>{% endfor %}
 <h3>Add a custom domain</h3><form class="card" method="post" action="{% url 'domain-add' gym.slug %}">{% csrf_token %}{{ domain_form.as_p }}<button>Register domain</button></form>
 <h2>Branches</h2><div class="grid">{% for branch in branches %}<article class="card"><h3>{{ branch.name }}</h3><p>{{ branch.address }}</p></article>{% empty %}<p>No branches added yet.</p>{% endfor %}</div>
-{% endblock %}
+<section class="card" style="margin-top:20px"><h2>Payment integration identifier</h2><p>Use this immutable gym ID for its own COPAY merchant configuration.</p><p style="overflow-wrap:anywhere;font-family:monospace">{{ gym.database_key }}</p></section>{% endblock %}

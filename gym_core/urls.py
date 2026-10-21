@@ -6,8 +6,17 @@ from .memberships import views as membership_views
 from . import views
 from .members import views as member_views
 from .auth_views import GymLoginView
+from payments import views as payment_views
 
 urlpatterns = [
+    path("manage/payments/", payment_views.owner_payments, name="owner-payments"),
+    path("payments/copay/notify/", payment_views.notify, name="copay-notify"),
+    path("manage/payments/<uuid:subscription_id>/issue/", payment_views.issue, name="payment-issue"),
+    path("payments/<uuid:order_id>/", payment_views.detail, name="payment-detail"),
+    path("payments/<uuid:order_id>/checkout/", payment_views.checkout, name="payment-checkout"),
+    path("payments/<uuid:order_id>/recheck/", payment_views.recheck, name="payment-recheck"),
+    path("payments/<uuid:order_id>/return/", payment_views.returned, name="payment-return"),
+    path("payments/<uuid:order_id>/receipt/", payment_views.receipt, name="payment-receipt"),
     path("", public_views.home, name="home"),
     path("about/", public_views.about, name="about"),
     path("memberships/", public_views.memberships, name="memberships"),

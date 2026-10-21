@@ -27,10 +27,10 @@ pos/                             Tenant application
   inventory/                     Planned stock ledger
   sales/                         Planned sales/receipts/refunds
 payments/                        Tenant member-to-gym payment application
-  gateway_adapters/              Provider-neutral typed contract
+  gateway_adapters/              Provider-neutral contract and COPAY deposit adapter
   recurring_billing/             Planned recurring collections
-  invoices/                      Planned member/POS invoices
-  webhooks/                      Planned verified/idempotent callbacks
+  invoices/                      Planned tax/member/POS invoices; payment acknowledgments exist
+  webhooks/                      COPAY verified callback endpoint in payments/views.py
 websites/                        White-label presentation application
   templates/                     Shared public website, owner editor, and portal templates
   branding.py                    Existing request-scoped branding
@@ -41,13 +41,15 @@ config/                          Router/admin infrastructure and compatibility i
 ```
 
 Domain folders marked Planned are architectural boundaries, not implemented
-business features. Billing, POS, recurring payment collection, and attendance
+business features. Platform SaaS billing, POS, recurring payment collection, and attendance
 remain planned. Gym-priced plan publishing, membership requests, and private contact
 inboxes, member profiles, invitation enrollment, and manually managed membership
-terms are implemented. Activation requires an owner action and a reason; it does
-not collect or verify payment. Subscription
+terms are implemented. Manual activation requires an owner action and a reason;
+it does not collect or verify payment. COPAY orders provide a separate verified
+payment flow. Subscription
 prices (such as PHP 2,999 SaaS and PHP 1,000 gym membership) are proposed pricing,
-not hardcoded application defaults. Concrete payment providers are not configured.
+not hardcoded application defaults. COPAY one-time deposit integration is implemented but disabled until each gym has
+its own merchant configuration; see [COPAY setup](copay.md).
 Celery/Redis and notification/billing workers are also planned, not running.
 
 ## Database ownership

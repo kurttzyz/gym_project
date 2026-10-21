@@ -37,6 +37,15 @@ from gym_core.members.models import MemberProfile, MemberInvitation
 from gym_core.memberships.models import MemberSubscription, MembershipEvent
 from gym_core.members.services import issue_invitation, end_of_term
 from gym_core.members.forms import waiver_version
+from payments.models import PaymentOrder
+from payments.services import create_order, start_checkout, reconcile, process_callback
+from payments.gateway_adapters.copay import CopayConfig, CopayError, CopayConfigurationError, CopayGateway, config_for_gym
+from cryptography.hazmat.primitives.asymmetric import rsa, padding as rsa_padding
+from cryptography.hazmat.primitives import hashes, serialization
+import base64
+import json
+import tempfile
+import hashlib
 from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
@@ -961,6 +970,7 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
         with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(PaymentOrder)
             editor.delete_model(MembershipEvent)
             editor.delete_model(MemberSubscription)
             editor.delete_model(MemberInvitation)
@@ -969,6 +979,7 @@ class GymDatabaseTests(unittest.TestCase):
             editor.delete_model(MembershipPlan)
             editor.delete_model(ContactMessage)
             editor.remove_field(WebsiteSettings, WebsiteSettings._meta.get_field("waiver_text"))
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="payments").delete()
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core").delete()
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="websites", name__in=["0002_contactmessage", "0003_websitesettings_waiver_text"]).delete()
         self.user.is_superuser = True
@@ -1251,6 +1262,239 @@ class GymDatabaseTests(unittest.TestCase):
         for name in ("gym_core_memberprofile", "gym_core_memberinvitation", "gym_core_membersubscription", "gym_core_membershipevent"):
             self.assertNotIn(name, tables)
             self.assertIn(name, connections[self.alias_a].introspection.table_names())
+
+    def copay_config(self, environment="production"):
+        # Test-only keys; generated in memory and never sent to a real provider.
+        if not hasattr(self, "merchant_rsa"):
+            self.merchant_rsa = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            self.provider_rsa = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        return CopayConfig("GYM-TEST", "test-aes-secret", self.merchant_rsa,
+            self.provider_rsa.public_key(), environment, "GCQR0", "https://" + self.domain_a.hostname,
+            ("cashier.copay.plus",))
+
+    def copay_order(self, environment="production"):
+        member, subscription = self.enrolled_member()
+        config = self.copay_config(environment)
+        with gym_database(self.alias_a), patch("payments.services.config_for_gym", return_value=config):
+            order = create_order(self.alias_a, self.a, subscription.pk)
+        return member, subscription, order, config
+
+    def copay_result(self, order, status=6, **overrides):
+        return {"transactionId": "DTEST" + order.id.hex, "merchantTransactionId": order.merchant_reference,
+                "statusId": status, "amount": str(order.amount), "netAmount": str(order.amount),
+                "paymentMethodCode": order.payment_method, **overrides}
+
+    def copay_callback(self, order, config, **overrides):
+        gateway = CopayGateway(config)
+        data = {"MerchantCode": order.merchant_code, "MerchantTransactionId": order.merchant_reference,
+                "CurrencyCode": order.currency, "Amount": str(order.amount), "Status": 6,
+                "PaymentMethodCode": order.payment_method, **overrides}
+        raw = json.dumps(data).encode()
+        return json.dumps({"TransactionId": "unsigned-outer-value", "MerchantTransactionId": order.merchant_reference,
+                           "Data": gateway.encrypt(raw), "Signature": base64.b64encode(
+                               self.provider_rsa.sign(raw, rsa_padding.PKCS1v15(), hashes.SHA1())).decode(),
+                           "Version": 0}).encode()
+
+    def test_copay_issue_is_idempotent_and_uses_server_quote(self):
+        member, subscription, order, config = self.copay_order()
+        with patch("payments.services.config_for_gym", return_value=config):
+            response = self.tenant_client().post(f"/manage/payments/{subscription.pk}/issue/", {"amount": "0.01"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(PaymentOrder.objects.using(self.alias_a).count(), 1)
+        self.assertEqual(order.amount, subscription.price)
+        self.assertEqual(PaymentOrder.objects.using(self.alias_b).count(), 0)
+        self.assertNotIn("payments_paymentorder", connection.introspection.table_names())
+
+    def test_copay_checkout_only_submits_once_even_after_timeout(self):
+        member, subscription, order, config = self.copay_order()
+        client = self.tenant_client()
+        with patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "submit", side_effect=CopayError("Timeout")) as submit:
+            self.assertEqual(client.post(f"/payments/{order.pk}/checkout/").status_code, 302)
+            self.assertEqual(client.post(f"/payments/{order.pk}/checkout/").status_code, 302)
+        self.assertEqual(submit.call_count, 1)
+        order.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "submitting")
+        self.assertEqual(order.subscription_id, subscription.pk)
+
+    def test_copay_checkout_redirects_only_to_configured_cashier(self):
+        member, subscription, order, config = self.copay_order()
+        with patch("payments.services.config_for_gym", return_value=config), patch.object(CopayGateway, "submit", return_value={
+                "transactionId": "DTEST" + order.id.hex, "url": "https://cashier.copay.plus/checkout/123",
+                "depositActualAmount": str(order.amount)}):
+            response = self.tenant_client().post(f"/payments/{order.pk}/checkout/")
+        self.assertEqual(response["Location"], "https://cashier.copay.plus/checkout/123")
+        order.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "pending")
+
+    def test_copay_verified_payment_activates_once_and_never_downgrades(self):
+        member, subscription, order, config = self.copay_order()
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        with gym_database(self.alias_a), patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "requery", return_value=self.copay_result(order)):
+            reconcile(self.alias_a, self.a, order.pk)
+            reconcile(self.alias_a, self.a, order.pk)
+        order.refresh_from_db(using=self.alias_a)
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(subscription.status, "active")
+        self.assertIsNotNone(order.paid_at)
+        event = MembershipEvent.objects.using(self.alias_a).get(subscription=subscription, action="activate")
+        self.assertIsNone(event.actor_id)
+        with gym_database(self.alias_a), patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "requery", return_value=self.copay_result(order, status=7)):
+            reconcile(self.alias_a, self.a, order.pk)
+        order.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "paid")
+
+    def test_copay_short_payment_is_recorded_for_review_without_access(self):
+        member, subscription, order, config = self.copay_order()
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        with gym_database(self.alias_a), patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "requery", return_value=self.copay_result(order, netAmount="0.01")):
+            reconcile(self.alias_a, self.a, order.pk)
+        order.refresh_from_db(using=self.alias_a)
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(order.net_amount, Decimal("0.01"))
+        self.assertEqual(subscription.status, "pending")
+        self.assertIn("Owner review", order.access_note)
+        self.assertContainsText(self.tenant_client().get(f"/payments/{order.pk}/receipt/"), "0.01")
+
+    def test_copay_sandbox_does_not_activate_real_access(self):
+        member, subscription, order, config = self.copay_order("sandbox")
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        with gym_database(self.alias_a), patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "requery", return_value=self.copay_result(order)):
+            reconcile(self.alias_a, self.a, order.pk)
+        order.refresh_from_db(using=self.alias_a)
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(subscription.status, "pending")
+        self.assertIn("Sandbox", order.access_note)
+
+    def test_copay_paid_cancelled_term_requires_owner_review(self):
+        member, subscription, order, config = self.copay_order()
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        self.membership_action(member, subscription, "cancel")
+        with gym_database(self.alias_a), patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "requery", return_value=self.copay_result(order)):
+            reconcile(self.alias_a, self.a, order.pk)
+        order.refresh_from_db(using=self.alias_a)
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(subscription.status, "cancelled")
+        self.assertIn("Owner review", order.access_note)
+
+    def test_copay_requery_rejects_amount_reference_and_method_mismatch(self):
+        member, subscription, order, config = self.copay_order()
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        for overrides in ({"amount": "0.01"}, {"merchantTransactionId": "another-order"},
+                          {"paymentMethodCode": "GCP"}, {"statusId": True}, {"currencyCode": "USD"}):
+            with self.subTest(overrides=overrides), gym_database(self.alias_a), patch(
+                    "payments.services.config_for_gym", return_value=config), patch.object(
+                    CopayGateway, "requery", return_value=self.copay_result(order, **overrides)):
+                with self.assertRaises(CopayError):
+                    reconcile(self.alias_a, self.a, order.pk)
+        order.refresh_from_db(using=self.alias_a)
+        self.assertIsNone(order.paid_at)
+
+    def test_copay_callback_requires_signature_and_requery_not_outer_transaction_id(self):
+        member, subscription, order, config = self.copay_order()
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        body = self.copay_callback(order, config)
+        client = Client(HTTP_HOST=self.domain_a.hostname, enforce_csrf_checks=True)
+        with patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "requery", return_value=self.copay_result(order)) as requery:
+            for _ in range(2):
+                response = client.post("/payments/copay/notify/", body, content_type="application/json")
+                self.assertEqual(response.content, b"success")
+            self.assertEqual(requery.call_count, 2)
+        order.refresh_from_db(using=self.alias_a)
+        self.assertNotEqual(order.provider_reference, "unsigned-outer-value")
+        tampered = json.loads(body)
+        tampered["Signature"] = base64.b64encode(b"invalid").decode()
+        with patch("payments.services.config_for_gym", return_value=config), patch.object(CopayGateway, "requery") as requery:
+            self.assertEqual(client.post("/payments/copay/notify/", json.dumps(tampered), content_type="application/json").status_code, 400)
+            requery.assert_not_called()
+
+    def test_copay_success_callback_is_retried_until_requery_confirms(self):
+        member, subscription, order, config = self.copay_order()
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        body = self.copay_callback(order, config)
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        with patch("payments.services.config_for_gym", return_value=config), patch.object(
+                CopayGateway, "requery", side_effect=[self.copay_result(order, status=1), self.copay_result(order)]):
+            first = client.post("/payments/copay/notify/", body, content_type="application/json")
+            self.assertEqual(first.status_code, 400)
+            self.assertEqual(client.post("/payments/copay/notify/", body, content_type="application/json").content, b"success")
+        order.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "paid")
+
+    def test_copay_cross_gym_callback_cannot_select_another_database(self):
+        member, subscription, order, config = self.copay_order()
+        with patch("payments.services.config_for_gym", return_value=config), patch.object(CopayGateway, "requery") as requery:
+            response = Client(HTTP_HOST=self.domain_b.hostname).post("/payments/copay/notify/", self.copay_callback(order, config), content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+        requery.assert_not_called()
+
+    def test_copay_return_url_never_marks_paid_and_receipts_require_settlement(self):
+        member, subscription, order, config = self.copay_order()
+        client = self.tenant_client()
+        self.assertEqual(client.get(f"/payments/{order.pk}/return/?status=6&paid=true").status_code, 302)
+        self.assertEqual(client.get(f"/payments/{order.pk}/receipt/").status_code, 404)
+        order.refresh_from_db(using=self.alias_a)
+        self.assertEqual(order.status, "created")
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="paid", paid_at=timezone.now())
+        self.assertContainsText(client.get(f"/payments/{order.pk}/receipt/"), "Payment acknowledgment")
+
+    def test_copay_member_can_only_view_and_pay_their_own_order(self):
+        member, subscription, order, config = self.copay_order()
+        token = self.invitation_token(member)
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        client.post(f"/activate/{token}/", self.claim_payload())
+        self.assertEqual(client.get(f"/payments/{order.pk}/").status_code, 200)
+        other = MemberProfile.objects.using(self.alias_a).create(full_name="Private",email="payment-private@example.com",phone="123")
+        MemberSubscription.objects.using(self.alias_a).filter(pk=subscription.pk).update(member=other)
+        self.assertEqual(client.get(f"/payments/{order.pk}/").status_code, 404)
+        self.assertEqual(client.post(f"/payments/{order.pk}/checkout/").status_code, 404)
+        self.assertEqual(client.post(f"/payments/{order.pk}/recheck/").status_code, 404)
+
+    def test_copay_writes_require_csrf_owner_and_post(self):
+        member, subscription, order, config = self.copay_order()
+        client = self.tenant_client(csrf=True)
+        self.assertEqual(client.post(f"/payments/{order.pk}/checkout/").status_code, 403)
+        self.assertEqual(client.post(f"/payments/{order.pk}/recheck/").status_code, 403)
+        self.assertEqual(self.tenant_client().get(f"/payments/{order.pk}/checkout/").status_code, 405)
+        Membership.objects.filter(user=self.user,organization=self.a).update(role="staff")
+        self.assertEqual(self.tenant_client().get(f"/payments/{order.pk}/").status_code, 404)
+        self.assertEqual(self.tenant_client().post(f"/manage/payments/{subscription.pk}/issue/").status_code, 404)
+
+    def test_copay_config_requires_separate_merchant_and_verified_domain(self):
+        config = self.copay_config()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "merchant.pem").write_bytes(self.merchant_rsa.private_bytes(serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            (root / "copay.pem").write_bytes(self.provider_rsa.public_key().public_bytes(serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo))
+            data = {"merchant_code":config.merchant_code, "aes_key":config.aes_key,
+                    "merchant_private_key_file":"merchant.pem", "copay_public_key_file":"copay.pem",
+                    "environment":"production", "public_origin":config.public_origin, "payment_method":"GCQR0"}
+            path = root / "copay.secrets.json"
+            with override_settings(COPAY_CONFIG_FILE=str(path)):
+                path.write_text(json.dumps({str(self.a.database_key): data}))
+                self.assertEqual(config_for_gym(self.a).merchant_code, config.merchant_code)
+                with self.assertRaises(CopayConfigurationError):
+                    config_for_gym(self.b)
+                path.write_text(json.dumps({str(self.a.database_key):data, str(self.b.database_key):data}))
+                with self.assertRaises(CopayConfigurationError):
+                    config_for_gym(self.a)
+                data["public_origin"] = "https://unverified.example.com"
+                path.write_text(json.dumps({str(self.a.database_key):data}))
+                with self.assertRaises(CopayConfigurationError):
+                    config_for_gym(self.a)
+
 
 
 if __name__ == "__main__":

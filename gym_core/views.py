@@ -28,7 +28,7 @@ def tenant_dashboard(request):
             access = Membership.objects.get(organization=gym, user=request.user)
             if access.role == "member" and profile is None:
                 raise Http404
-            subscriptions = list(profile.subscriptions.select_related("member")) if profile else []
+            subscriptions = list(profile.subscriptions.select_related("member", "payment")) if profile else []
             branches = list(Location.objects.all())
     except (GymDatabaseUnavailable, DatabaseError, OSError):
         return render(request, "gyms/unavailable.html", status=503)

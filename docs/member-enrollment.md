@@ -15,7 +15,9 @@ IDs are stored as scalar references, never cross-database foreign keys.
    pending term and snapshots the plan name, price, and period.
 4. Select Activate (manual/offline), enter a reason or offline reference, and save.
    This grants dated access; it does not verify payment, create a receipt, or
-   charge a card. Every lifecycle action records the operator ID, note, and time.
+   charge a card. Alternatively create a [COPAY payment](copay.md) from a pending
+   term; verified production settlement can activate it automatically. Lifecycle history records the note and time, with an operator ID for manual
+   actions or System for verified COPAY activation.
 5. Create an invitation link and share it privately with the member. Only the
    digest is stored. Links expire after 48 hours, are single-use, and work only
    on the issuing gym's domain. Reissuing, changing email, or disabling the

@@ -66,8 +66,9 @@ are separate from tenant membership terms and payment records.
 
 Owner website editing is available at `/manage/website/` and the owner dashboard
 at `/manage/` on each gym domain. Member portals are at `/portal/`. Self-service
-signup, branch editing, payment collection, attendance, and POS transactions
-are not implemented yet. Owners can enroll approved applications or walk-in members,
+signup, branch editing, attendance, and POS transactions
+are not implemented yet. COPAY one-time membership payments are implemented and
+remain disabled until each gym has its own merchant configuration. Owners can enroll approved applications or walk-in members,
 assign/renew dated terms, manually activate/freeze/resume/cancel access, and issue
 single-use member account invitations. Approval alone does not activate membership,
 and manual activation does not record or verify a payment. See the
@@ -138,8 +139,8 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 81 checks
-and two direct database-routing boundary tests.
+The Django runner executes a subprocess integration suite containing 96 checks
+and two direct database-routing boundary tests, plus seven COPAY protocol tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
 and PostgreSQL connection privileges, then removes only its own databases/roles.
@@ -188,3 +189,14 @@ create and publish their own PHP-priced plans at `/manage/plans/`, review reques
 at `/manage/applications/`, and read messages at `/manage/inbox/`. Plan requests
 are inquiries, not charges or automatic account activation. See the complete
 [membership website workflow](docs/membership-website.md).
+
+## COPAY membership payments
+
+Owners create payments from pending membership terms and review them at
+`/manage/payments/` on their gym domain. Members pay through COPAY's cashier;
+verified production payments activate eligible terms. Sandbox payments never grant
+access. Copy `deploy/copay.example.json` to ignored `copay.secrets.json`, fill each
+gym's own merchant configuration/key files, and set `COPAY_CONFIG_FILE` in `.env`.
+See [COPAY configuration, onboarding, and verification](docs/copay.md) for the
+complete setup and callback URLs. No real provider transaction has been tested
+without merchant credentials. Recurring charges and platform SaaS billing remain planned.

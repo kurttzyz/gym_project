@@ -111,7 +111,7 @@ class MemberSubscription(models.Model):
 class MembershipEvent(models.Model):
     subscription = models.ForeignKey(MemberSubscription, on_delete=models.PROTECT, related_name="events")
     action = models.CharField(max_length=20)
-    actor_id = models.PositiveBigIntegerField()
+    actor_id = models.PositiveBigIntegerField(null=True, blank=True)
     note = models.TextField(max_length=1000)
     created_at = models.DateTimeField(auto_now_add=True)
 

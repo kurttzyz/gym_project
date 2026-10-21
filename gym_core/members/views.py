@@ -55,7 +55,7 @@ def edit_member(request, member_id=None):
 
 def member_context(member, plan_form=None):
     return {"member": member,
-            "subscriptions": member.subscriptions.select_related("member").prefetch_related("events"),
+            "subscriptions": member.subscriptions.select_related("member", "payment").prefetch_related("events"),
             "plan_form": plan_form if plan_form is not None else AssignPlanForm()}
 
 

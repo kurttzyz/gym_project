@@ -173,3 +173,6 @@ FORMS_URLFIELD_ASSUME_HTTPS = True
 # Central identity/access apps remain on default; operational business apps are
 # allowed only on tenant databases, even before they introduce their first models.
 TENANT_APP_LABELS = {"tenant_data", "gym_core", "pos", "payments", "websites"}
+
+# Per-gym merchant credentials are read from an ignored operator-managed secret file.
+COPAY_CONFIG_FILE = os.environ.get("COPAY_CONFIG_FILE", "")

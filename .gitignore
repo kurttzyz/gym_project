@@ -7,3 +7,9 @@ __pycache__/
 staticfiles/
 .coverage
 gym_databases/
+
+# Merchant secrets and private/public integration keys
+copay.secrets.json
+secrets/
+*.pem
+*.key

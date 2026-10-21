@@ -1,0 +1,12 @@
+{
+  "REPLACE_WITH_GYM_ID_FROM_PLATFORM_DETAIL_PAGE": {
+    "environment": "sandbox",
+    "merchant_code": "",
+    "aes_key": "",
+    "merchant_private_key_file": "secrets/gym-a-merchant-private.pem",
+    "copay_public_key_file": "secrets/gym-a-copay-public.pem",
+    "public_origin": "https://gym-a.example.com",
+    "payment_method": "GCQR0",
+    "cashier_hosts": []
+  }
+}
