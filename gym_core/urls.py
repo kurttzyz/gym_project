@@ -12,8 +12,14 @@ from platform_core.billing import views as billing_views
 from pos import views as pos_views
 
 from .classes import views as class_views
+from .notifications import views as notification_views
 
 urlpatterns = [
+    path("manage/notifications/", notification_views.settings_page, name="owner-notifications"),
+    path("manage/notifications/test/", notification_views.test_email, name="notification-test"),
+    path("manage/notifications/<uuid:notification_id>/", notification_views.detail, name="notification-detail"),
+    path("manage/notifications/<uuid:notification_id>/retry/", notification_views.retry, name="notification-retry"),
+    path("portal/notifications/", notification_views.preferences, name="member-email-preferences"),
     path("manage/trainers/", class_views.trainers, name="class-trainers"),
     path("manage/trainers/<uuid:trainer_id>/", class_views.trainers, name="class-trainer-edit"),
     path("manage/classes/new/", class_views.new_session, name="class-new"),

@@ -232,3 +232,7 @@ setup; managed SaaS agreements require POS in their current entitlements. See th
 ### Class schedules and trainer bookings
 
 Gym owners can add trainers at `/manage/trainers/` and publish sessions at `/manage/classes/new/`. Staff review the timetable and rosters at `/desk/classes/`; members book or cancel from `/portal/classes/`. Full sessions offer a waitlist, and cancellations promote eligible members in queue order. All records stay in that gym's database. Class access uses the memberships SaaS module. See [the class booking guide](docs/classes.md) for setup, permissions, and limits.
+
+### Automated email notifications
+
+Owners configure branded email and review delivery history at `/manage/notifications/`; members control their preferences at `/portal/notifications/`. Class events, verified production member payments, new applications, expiry reminders, and upcoming class reminders use a durable per-gym outbox. SMTP delivery is disabled by default. Configure SMTP once, then keep Redis, Celery worker, and Celery beat services running. See [notification setup and operating guide](docs/notifications.md), including native Windows/PostgreSQL and Docker instructions.

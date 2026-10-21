@@ -17,7 +17,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
-from django.db import connection, connections, DatabaseError, IntegrityError
+from django.db import connection, connections, DatabaseError, IntegrityError, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import Client, override_settings
 from config.database_router import gym_database
@@ -59,6 +59,10 @@ from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
 
+from gym_core.notifications.models import NotificationSettings, EmailNotification, EmailAttempt
+from gym_core.notifications.services import queue_email as queue_notice
+from gym_core.notifications.delivery import deliver_batch as deliver_email_batch
+from gym_core.notifications.reminders import queue_reminders as queue_email_reminders
 from gym_core.classes.models import Trainer, ClassSession, ClassBooking, BookingEvent
 from gym_core.classes.services import (create_session as create_class, book as book_class,
     cancel_booking as cancel_class_booking, cancel_session as cancel_class_session, BookingError)
@@ -983,7 +987,8 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
         with connections[self.alias_a].schema_editor() as editor:
-            for model in (BookingEvent, ClassBooking, ClassSession, Trainer):
+            for model in (EmailAttempt, EmailNotification, NotificationSettings, BookingEvent, ClassBooking, ClassSession, Trainer):
+                # Empty notification tables belong to a later schema than this fixture.
                 editor.delete_model(model)
             editor.delete_model(AttendanceScan)
             editor.delete_model(AttendanceVisit)
@@ -1766,12 +1771,15 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         member,subscription,code=self.active_card()
         with connections[self.alias_a].schema_editor() as editor:
-            for model in (BookingEvent, ClassBooking, ClassSession, Trainer):
+            for model in (EmailAttempt, EmailNotification, NotificationSettings, BookingEvent, ClassBooking, ClassSession, Trainer):
+                # Empty notification tables belong to a later schema than this fixture.
                 editor.delete_model(model)
             editor.delete_model(AttendanceScan);editor.delete_model(AttendanceVisit)
             editor.remove_field(MemberProfile,MemberProfile._meta.get_field("qr_version"))
+            editor.remove_field(MemberProfile,MemberProfile._meta.get_field("email_notifications"))
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core",name__in=["0004_memberprofile_qr_version_attendancevisit_and_more",
-            "0005_trainer_classbooking_bookingevent_classsession_and_more"]).delete()
+            "0005_trainer_classbooking_bookingevent_classsession_and_more",
+            "0006_memberprofile_email_notifications_emailnotification_and_more"]).delete()
         self.user.is_superuser=True;self.user.save()
         self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"),"Retry setup")
         self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/retry-setup/").status_code,302)
@@ -2572,8 +2580,10 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         member,term,code = self.active_card()
         with connections[self.alias_a].schema_editor() as editor:
-            for model in (BookingEvent,ClassBooking,ClassSession,Trainer):editor.delete_model(model)
-        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__startswith='0005_').delete()
+            for model in (EmailAttempt,EmailNotification,NotificationSettings,BookingEvent,ClassBooking,ClassSession,Trainer):editor.delete_model(model)
+            editor.remove_field(MemberProfile,MemberProfile._meta.get_field("email_notifications"))
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__in=['0005_trainer_classbooking_bookingevent_classsession_and_more',
+            '0006_memberprofile_email_notifications_emailnotification_and_more']).delete()
         self.make_platform_admin()
         self.assertContainsText(self.client.get(f'/gyms/{self.a.slug}/'),'Retry setup')
         self.assertEqual(self.client.post(f'/gyms/{self.a.slug}/retry-setup/').status_code,302)
@@ -2589,6 +2599,281 @@ class GymDatabaseTests(unittest.TestCase):
         client = Client(HTTP_HOST=self.domain_a.hostname)
         response = client.post('/accounts/login/',{'username':account.username,'password':'Desk-Strong-84!'})
         self.assertEqual(response['Location'],'/desk/classes/')
+
+
+    def enable_notifications(self, alias=None, domain=None):
+        return NotificationSettings.objects.using(alias or self.alias_a).create(pk=1,email_enabled=True,
+            owner_email='owner@example.com',public_origin='https://'+(domain or self.domain_a).hostname)
+
+    def mail_transport(self):
+        from django.core import mail
+        mail.outbox = []
+        return override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+            NOTIFICATION_DELIVERY_ENABLED=True,EMAIL_HOST='smtp.test',DEFAULT_FROM_EMAIL='service@mailer.test')
+
+    def queued_notice(self, key=None, member=None, **kwargs):
+        return queue_notice(self.alias_a,key=key or 'fixture:'+uuid4().hex,category='bookings',
+            title='Class update',message='Your class has been updated.',member=member,**kwargs)
+
+    def test_notifications_disabled_by_default_and_no_smtp_in_request(self):
+        user,member,session = self.class_fixture()
+        with patch('django.core.mail.EmailMultiAlternatives.send') as send:
+            book_class(self.alias_a,session.pk,member.pk,user.pk)
+        self.assertFalse(EmailNotification.objects.using(self.alias_a).exists())
+        send.assert_not_called()
+
+    def test_notifications_booking_events_queue_in_same_transaction_and_deduplicate(self):
+        user,member,session = self.class_fixture()
+        self.enable_notifications()
+        with patch('django.core.mail.EmailMultiAlternatives.send') as send:
+            booking = book_class(self.alias_a,session.pk,member.pk,user.pk)
+            book_class(self.alias_a,session.pk,member.pk,user.pk)
+        send.assert_not_called()
+        row = EmailNotification.objects.using(self.alias_a).get()
+        self.assertEqual(row.recipient,member.email)
+        self.assertEqual(row.expected_status,'confirmed')
+        self.assertIn(self.domain_a.hostname,row.text_body)
+        self.assertNotIn(self.domain_b.hostname,row.text_body)
+        try:
+            with gym_database(self.alias_a),transaction.atomic(using=self.alias_a):
+                BookingEvent.objects.create(booking=booking,action='confirmed',actor_id=user.pk)
+                raise ValueError('rollback')
+        except ValueError:pass
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).count(),1)
+
+    def test_notifications_waitlist_promotion_and_class_cancellation(self):
+        user,member,session = self.class_fixture()
+        user2,member2 = self.another_class_member()
+        self.enable_notifications()
+        one = book_class(self.alias_a,session.pk,member.pk,user.pk)
+        book_class(self.alias_a,session.pk,member2.pk,user2.pk)
+        cancel_class_booking(self.alias_a,one.pk,user.pk)
+        cancel_class_session(self.alias_a,session.pk,'Trainer ill',self.user.pk)
+        rows = EmailNotification.objects.using(self.alias_a)
+        self.assertTrue(rows.filter(subject__contains='place is now confirmed',member=member2).exists())
+        self.assertTrue(rows.filter(text_body__contains='Trainer ill',member=member2).exists())
+        self.assertEqual(rows.count(),5)
+
+    def test_notifications_successful_delivery_and_repeated_worker_does_not_resend(self):
+        from django.core import mail
+        self.enable_notifications()
+        row = self.queued_notice()
+        with self.mail_transport():
+            self.assertEqual(deliver_email_batch(self.a,self.alias_a),1)
+            self.assertEqual(deliver_email_batch(self.a,self.alias_a),0)
+            self.assertEqual(len(mail.outbox),1)
+            self.assertEqual(mail.outbox[0].to,['owner@example.com'])
+            self.assertIn(str(row.pk),mail.outbox[0].extra_headers['Message-ID'])
+            self.assertIn('text/html',str(mail.outbox[0].alternatives[0]))
+        row.refresh_from_db(using=self.alias_a)
+        self.assertEqual(row.status,'sent')
+        self.assertEqual(row.attempts,1)
+        self.assertEqual(EmailAttempt.objects.using(self.alias_a).get().outcome,'accepted_by_mail_server')
+
+    def test_notifications_transport_off_preserves_queue_without_attempt(self):
+        self.enable_notifications(); row = self.queued_notice()
+        with override_settings(NOTIFICATION_DELIVERY_ENABLED=False):
+            self.assertEqual(deliver_email_batch(self.a,self.alias_a),0)
+        row.refresh_from_db(using=self.alias_a)
+        self.assertEqual(row.status,'queued'); self.assertEqual(row.attempts,0)
+
+    def test_notifications_transport_error_retries_with_safe_history(self):
+        self.enable_notifications(); row = self.queued_notice()
+        with self.mail_transport(),patch('django.core.mail.EmailMultiAlternatives.send',side_effect=RuntimeError('private-provider-password')):
+            self.assertEqual(deliver_email_batch(self.a,self.alias_a),0)
+        row.refresh_from_db(using=self.alias_a)
+        self.assertEqual(row.status,'queued'); self.assertGreater(row.available_at,timezone.now())
+        self.assertEqual(row.outcome,'transport_error')
+        self.assertNotIn('private-provider-password',EmailAttempt.objects.using(self.alias_a).get().outcome)
+        EmailNotification.objects.using(self.alias_a).filter(pk=row.pk).update(available_at=timezone.now())
+        with self.mail_transport():self.assertEqual(deliver_email_batch(self.a,self.alias_a),1)
+        self.assertEqual(EmailAttempt.objects.using(self.alias_a).count(),2)
+
+    def test_notifications_permanent_rejection_and_owner_retry_preserves_attempts(self):
+        import smtplib
+        self.enable_notifications(); row = self.queued_notice()
+        with self.mail_transport(),patch('django.core.mail.EmailMultiAlternatives.send',side_effect=smtplib.SMTPRecipientsRefused({'private@example.com':(550,b'no')})):
+            deliver_email_batch(self.a,self.alias_a)
+        row.refresh_from_db(using=self.alias_a); self.assertEqual(row.status,'failed')
+        client = self.tenant_client()
+        self.assertEqual(client.get(f'/manage/notifications/{row.pk}/retry/').status_code,405)
+        self.assertEqual(client.post(f'/manage/notifications/{row.pk}/retry/').status_code,302)
+        with self.mail_transport():self.assertEqual(deliver_email_batch(self.a,self.alias_a),1)
+        self.assertEqual(EmailAttempt.objects.using(self.alias_a).count(),2)
+
+    def test_notifications_opt_out_suppresses_already_queued_member_message(self):
+        user,member,session = self.class_fixture(); self.enable_notifications()
+        row = self.queued_notice(member=member)
+        client = Client(HTTP_HOST=self.domain_a.hostname); client.force_login(user)
+        from gym_core.notifications.forms import MemberEmailForm
+        original_validation = MemberEmailForm.is_valid
+        replacement_qr = uuid4()
+        def concurrent_owner_update(form):
+            valid = original_validation(form)
+            MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).update(is_active=False,qr_version=replacement_qr)
+            return valid
+        with patch('gym_core.notifications.forms.MemberEmailForm.is_valid',autospec=True,side_effect=concurrent_owner_update):
+            self.assertEqual(client.post('/portal/notifications/',{}).status_code,302)
+        member.refresh_from_db(using=self.alias_a)
+        self.assertFalse(member.is_active)
+        self.assertEqual(member.qr_version,replacement_qr)
+        self.assertFalse(member.email_notifications)
+        with self.mail_transport(),patch('django.core.mail.EmailMultiAlternatives.send') as send:
+            deliver_email_batch(self.a,self.alias_a)
+        send.assert_not_called(); row.refresh_from_db(using=self.alias_a)
+        self.assertEqual(row.status,'skipped')
+        self.assertIn('opted_out',row.outcome)
+
+    def test_notifications_disabled_category_or_changed_recipient_suppresses_queue(self):
+        self.enable_notifications(); row = self.queued_notice()
+        NotificationSettings.objects.using(self.alias_a).filter(pk=1).update(bookings=False)
+        with self.mail_transport():deliver_email_batch(self.a,self.alias_a)
+        row.refresh_from_db(using=self.alias_a); self.assertEqual(row.outcome,'gym_or_category_disabled')
+        NotificationSettings.objects.using(self.alias_a).filter(pk=1).update(bookings=True)
+        row2 = self.queued_notice()
+        NotificationSettings.objects.using(self.alias_a).filter(pk=1).update(owner_email='new@example.com')
+        with self.mail_transport():deliver_email_batch(self.a,self.alias_a)
+        row2.refresh_from_db(using=self.alias_a); self.assertEqual(row2.outcome,'owner_inbox_changed')
+
+    def test_notifications_stale_booking_confirmation_not_sent_after_cancel(self):
+        user,member,session = self.class_fixture(); self.enable_notifications()
+        booking = book_class(self.alias_a,session.pk,member.pk,user.pk)
+        cancel_class_booking(self.alias_a,booking.pk,user.pk)
+        with self.mail_transport():self.assertEqual(deliver_email_batch(self.a,self.alias_a),1)
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).filter(status='skipped',outcome='booking_changed').count(),1)
+
+    def test_notifications_renewal_and_class_reminders_deduplicate_and_recheck(self):
+        user,member,session = self.class_fixture(); self.enable_notifications()
+        MemberSubscription.objects.using(self.alias_a).filter(member=member).update(expires_on=timezone.localdate()+timedelta(days=7))
+        ClassSession.objects.using(self.alias_a).filter(pk=session.pk).update(starts_at=timezone.now()+timedelta(hours=12))
+        book_class(self.alias_a,session.pk,member.pk,user.pk)
+        queue_email_reminders(self.alias_a); queue_email_reminders(self.alias_a)
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).filter(category='membership_reminders').count(),1)
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).filter(category='class_reminders').count(),1)
+        MemberSubscription.objects.using(self.alias_a).filter(member=member).update(expires_on=timezone.localdate()+timedelta(days=30))
+        with self.mail_transport():deliver_email_batch(self.a,self.alias_a)
+        reminder = EmailNotification.objects.using(self.alias_a).get(category='membership_reminders')
+        self.assertEqual(reminder.outcome,'membership_changed')
+
+    def test_notifications_active_renewal_suppresses_expiry_reminder(self):
+        user,member,session = self.class_fixture(); self.enable_notifications()
+        term = MemberSubscription.objects.using(self.alias_a).get(member=member)
+        expiry = timezone.localdate()+timedelta(days=7)
+        MemberSubscription.objects.using(self.alias_a).filter(pk=term.pk).update(expires_on=expiry)
+        queue_email_reminders(self.alias_a)
+        MemberSubscription.objects.using(self.alias_a).create(member_id=member.pk,plan_id=term.plan_id,plan_name=term.plan_name,
+            price=100,period='month',status='active',starts_on=expiry,expires_on=expiry+timedelta(days=30))
+        with self.mail_transport():self.assertEqual(deliver_email_batch(self.a,self.alias_a),0)
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).get().outcome,'membership_already_renewed')
+
+    def test_notifications_expired_message_and_domain_removal_fail_closed(self):
+        self.enable_notifications()
+        row = self.queued_notice(expires_at=timezone.now()-timedelta(seconds=1))
+        row2 = self.queued_notice()
+        GymDomain.objects.filter(pk=self.domain_a.pk).update(is_active=False)
+        with self.mail_transport(),patch('django.core.mail.EmailMultiAlternatives.send') as send:
+            deliver_email_batch(self.a,self.alias_a)
+        send.assert_not_called(); row.refresh_from_db(using=self.alias_a); row2.refresh_from_db(using=self.alias_a)
+        self.assertEqual(row.outcome,'notification_expired'); self.assertEqual(row2.outcome,'gym_domain_unverified')
+
+    def test_notifications_concurrent_workers_claim_only_once(self):
+        self.enable_notifications(); self.queued_notice()
+        def deliver(_):
+            try:return deliver_email_batch(self.a,self.alias_a)
+            finally:connections.close_all()
+        with self.mail_transport(),patch('django.core.mail.EmailMultiAlternatives.send',return_value=1) as send:
+            with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(deliver,range(2)))
+        self.assertEqual(sum(results),1); self.assertEqual(send.call_count,1)
+
+    def test_notifications_stale_lease_recovery_records_attempt_and_delivers(self):
+        self.enable_notifications(); row = self.queued_notice()
+        now = timezone.now()
+        EmailNotification.objects.using(self.alias_a).filter(pk=row.pk).update(status='sending',attempts=1,claim_token=uuid4(),lease_until=now-timedelta(seconds=1))
+        EmailAttempt.objects.using(self.alias_a).create(notification_id=row.pk,number=1,outcome='sending',started_at=now-timedelta(minutes=10))
+        with self.mail_transport():self.assertEqual(deliver_email_batch(self.a,self.alias_a),1)
+        self.assertTrue(EmailAttempt.objects.using(self.alias_a).filter(number=1,outcome='worker_lease_expired',finished_at__isnull=False).exists())
+
+    def test_notifications_owner_permissions_and_history_isolation_and_csrf(self):
+        self.enable_notifications(); row = self.queued_notice()
+        client = self.tenant_client()
+        self.assertContainsText(client.get('/manage/notifications/'),'Class update')
+        self.assertContainsText(client.get(f'/manage/notifications/{row.pk}/'),'Your class has been updated')
+        self.assertEqual(self.tenant_client(csrf=True).post('/manage/notifications/test/').status_code,403)
+        staff = self.desk_account(); other = Client(HTTP_HOST=self.domain_a.hostname); other.force_login(staff)
+        self.assertEqual(other.get('/manage/notifications/').status_code,404)
+        self.assertEqual(self.tenant_client(self.domain_b).get(f'/manage/notifications/{row.pk}/').status_code,404)
+        self.assertFalse(EmailNotification.objects.using(self.alias_b).exists())
+
+    def test_notifications_settings_reject_foreign_domain_and_test_queues_only(self):
+        client = self.tenant_client()
+        data = {'email_enabled':'on','public_origin':'https://'+self.domain_b.hostname,'owner_email':'owner@example.com','owner_alerts':'on'}
+        self.assertContainsText(client.post('/manage/notifications/',data),'active verified domain belonging to this gym')
+        data['public_origin'] = 'https://'+self.domain_a.hostname
+        self.assertEqual(client.post('/manage/notifications/',data).status_code,302)
+        with patch('django.core.mail.EmailMultiAlternatives.send') as send:
+            self.assertEqual(client.post('/manage/notifications/test/').status_code,302)
+        send.assert_not_called(); self.assertEqual(EmailNotification.objects.using(self.alias_a).count(),1)
+
+    def test_notifications_payment_production_only_deduplicates_and_alerts_review(self):
+        user,member,session = self.class_fixture(); self.enable_notifications()
+        term = MemberSubscription.objects.using(self.alias_a).get(member=member)
+        order = PaymentOrder.objects.using(self.alias_a).create(subscription_id=term.pk,merchant_reference='N'+uuid4().hex,
+            merchant_code='test',environment='sandbox',payment_method='TEST',amount=100,status='paid')
+        self.assertFalse(EmailNotification.objects.using(self.alias_a).exists())
+        order.environment='production'; order.access_note='Owner review required: term not eligible.'; order.save(using=self.alias_a)
+        order.save(using=self.alias_a)
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).filter(category='payment_confirmations').count(),1)
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).filter(category='owner_alerts').count(),1)
+
+    def test_notifications_new_application_alert_branded_and_html_escaped(self):
+        self.enable_notifications()
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(display_name='Iron & Fit')
+        with gym_database(self.alias_a):
+            plan = MembershipPlan.objects.create(name='Unlimited',price=100)
+            application = MembershipApplication.objects.create(plan=plan,full_name='<script>alert(1)</script>',email='app@example.com',phone='0',
+                quoted_plan_name=plan.name,quoted_price=100,quoted_period='month')
+        row = EmailNotification.objects.using(self.alias_a).get()
+        self.assertEqual(row.recipient,'owner@example.com')
+        self.assertIn('Iron & Fit',row.subject)
+        self.assertNotIn('<script>',row.html_body)
+        self.assertIn('&lt;script&gt;',row.html_body)
+
+    def test_notifications_suspended_gym_suppresses_but_preferences_remain_available(self):
+        user,member,session = self.class_fixture(); self.enable_notifications(); row=self.queued_notice(member=member)
+        subscription,invoice = self.saas_assignment(trial=14)
+        change_saas_state(subscription.pk,'suspend',self.user.pk,'Support pause')
+        client = Client(HTTP_HOST=self.domain_a.hostname); client.force_login(user)
+        self.assertEqual(client.get('/portal/notifications/').status_code,200)
+        self.assertEqual(self.tenant_client().get('/manage/notifications/').status_code,200)
+        with self.mail_transport():self.assertEqual(deliver_email_batch(self.a,self.alias_a),0)
+        row.refresh_from_db(using=self.alias_a); self.assertEqual(row.outcome,'subscription_or_module_unavailable')
+
+    def test_notifications_scheduler_uses_registered_ids_and_gym_worker_scopes(self):
+        self.enable_notifications()
+        from gym_core.notifications.tasks import sweep_notifications,process_gym_notifications
+        with patch('gym_core.notifications.tasks.process_gym_notifications.delay') as dispatch:
+            sweep_notifications.run()
+        keys=[call.args[0] for call in dispatch.call_args_list]
+        self.assertIn(str(self.a.database_key),keys)
+        with patch('gym_core.notifications.tasks.queue_reminders') as reminders,patch('gym_core.notifications.tasks.deliver_batch') as deliver:
+            process_gym_notifications.run(str(self.a.database_key))
+        reminders.assert_called_once_with(self.alias_a)
+        self.assertEqual(deliver.call_args.args[:2],(self.a,self.alias_a))
+        self.assertIsNotNone(NotificationSettings.objects.using(self.alias_a).get().last_worker_check)
+
+    def test_notifications_upgrade_button_preserves_classes_and_members(self):
+        from django.db.migrations.recorder import MigrationRecorder
+        user,member,session = self.class_fixture()
+        with connections[self.alias_a].schema_editor() as editor:
+            for model in (EmailAttempt,EmailNotification,NotificationSettings):editor.delete_model(model)
+            editor.remove_field(MemberProfile,MemberProfile._meta.get_field('email_notifications'))
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__startswith='0006_').delete()
+        self.make_platform_admin()
+        self.assertContainsText(self.client.get(f'/gyms/{self.a.slug}/'),'Retry setup')
+        self.assertEqual(self.client.post(f'/gyms/{self.a.slug}/retry-setup/').status_code,302)
+        self.assertTrue(ClassSession.objects.using(self.alias_a).filter(pk=session.pk).exists())
+        self.assertTrue(MemberProfile.objects.using(self.alias_a).get(pk=member.pk).email_notifications)
+        self.assertFalse(EmailNotification.objects.using(self.alias_a).exists())
 
 
 if __name__ == "__main__":

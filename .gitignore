@@ -39,3 +39,6 @@ media/
 .idea/
 .DS_Store
 Thumbs.db
+# Local Celery scheduler state
+celerybeat-schedule*
+celerybeat.pid

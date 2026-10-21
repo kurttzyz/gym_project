@@ -22,7 +22,7 @@ Members sign in on their own gym domain and open `/portal/classes/`, also linked
 - Cancellation is available until the session starts. No cutoff fee or refund is involved.
 - Cancellation of a reservation offers its seat to waitlisted members in original queue order. Ineligible members and those with confirmed conflicts are skipped and retain their waitlist status. Promotion rechecks membership and branch/trainer availability. Cancelling and rebooking joins the back of the queue.
 - Promotion runs when a reservation is cancelled or a new booking is attempted. It is not a scheduled worker: restoring membership eligibility or cancelling a conflicting class elsewhere does not alone trigger promotion.
-- Members must check the portal for promotion/cancellation status. Email/SMS notifications are a later milestone.
+- Members must check the portal for promotion/cancellation status. Optional branded email confirmations, cancellations, promotions, and upcoming-class reminders are available after [notification setup](notifications.md). SMS is a later milestone.
 - The portal shows the latest 100 personal bookings, with paginated upcoming classes. Staff can browse session history and rosters. A booking is not gym entry attendance; QR entry still validates current membership separately.
 
 Bookings do not collect class fees, consume training credits, or automatically renew memberships. Eligibility changes after confirmation do not erase booking history or automatically release a seat. Gym staff remain responsible for verifying eligibility at class time. Recurring timetable generators, room allocation, class attendance/no-shows, trainer payroll, and paid personal-training packages are future extensions.

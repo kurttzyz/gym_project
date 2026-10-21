@@ -20,6 +20,7 @@ class MemberProfile(models.Model):
     emergency_contact_name = models.CharField(max_length=160, blank=True)
     emergency_contact_phone = models.CharField(max_length=50, blank=True)
     is_active = models.BooleanField(default=True)
+    email_notifications = models.BooleanField(default=True)
     waiver_text = models.TextField(blank=True, editable=False)
     waiver_accepted_at = models.DateTimeField(null=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -124,3 +124,5 @@ Owner account creation and website settings are documented in [owner websites](o
 See [membership website](membership-website.md) for public plans/applications and private owner workflows.
 
 Classes and trainers are part of the memberships module: owner-maintained trainer profiles and sessions, staff rosters, and member self-service reservations with capacity, waitlists, and cancellations. See [classes.md](classes.md).
+
+`gym_core/notifications/` contains tenant email settings, member opt-out, durable outbox, per-attempt history, domain-bound branding, event handlers, expiry/class reminders, and Celery worker tasks. SMTP credentials and Redis configuration remain operator-managed environment settings; delivery records stay in each gym database. See [notifications.md](notifications.md).

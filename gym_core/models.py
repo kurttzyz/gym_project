@@ -4,3 +4,4 @@ from .memberships.models import (MembershipApplication, MembershipEvent, Members
 
 from .attendance.models import AttendanceScan, AttendanceVisit
 from .classes.models import Trainer, ClassSession, ClassBooking, BookingEvent
+from .notifications.models import NotificationSettings, EmailNotification, EmailAttempt

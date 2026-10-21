@@ -155,3 +155,5 @@ POS is a separate module, default off on managed plans. Existing invoice/trial
 snapshots without a `pos` key stay unchanged. Branch/staff setup can be used when
 attendance, POS, or memberships (class scheduling) is included. Existing POS receipt reads remain available during
 restriction for authorized owners/original cashiers, like member payment receipts.
+
+Notification configuration/history and member email preferences remain available during suspension so operators and members can disable mail. Worker delivery still enforces the current SaaS allowance and the memberships or payments module for the originating event. See [notifications.md](notifications.md).

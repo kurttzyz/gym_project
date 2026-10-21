@@ -12,5 +12,35 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  notification-worker: &notification-service
+    build: .
+    profiles: ["notifications"]
+    env_file: .env
+    environment:
+      PGHOST: ${WORKER_PGHOST:-postgres}
+      PGPORT: ${WORKER_PGPORT:-5432}
+      CELERY_BROKER_URL: redis://redis:6379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["celery", "-A", "platform_config.celery:app", "worker", "--loglevel=info", "--concurrency=2"]
+  notification-scheduler:
+    <<: *notification-service
+    command: ["celery", "-A", "platform_config.celery:app", "beat", "--loglevel=info", "--schedule=/var/run/celery/schedule", "--pidfile=/var/run/celery/beat.pid"]
+    volumes:
+      - celery_schedule:/var/run/celery
 volumes:
+  celery_schedule:
   postgres_data:

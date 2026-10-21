@@ -1,0 +1,9 @@
+{% autoescape off %}{{ gym_name }}
+{{ title }}
+
+{{ message }}
+{% if url %}
+Open your gym: {{ url }}{% endif %}
+{% if preferences_url %}
+Email preferences: {{ preferences_url }}{% endif %}
+{% endautoescape %}
