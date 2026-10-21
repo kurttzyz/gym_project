@@ -15,7 +15,7 @@ urlpatterns = [
     path("gyms/<slug:slug>/domains/<int:domain_id>/verify/", views.verify_gym_domain, name="domain-verify"),
     path("gyms/<slug:slug>/domains/", views.add_domain, name="domain-add"),
     path("gyms/<slug:slug>/", views.gym_detail, name="gym-detail"),
-    path("admin/", admin.site.urls),
+    path("platform-admin/", admin.site.urls),
     path("health/", views.health, name="health"),
     path("api/organizations/", views.organizations, name="organizations"),
 ]
