@@ -19,7 +19,7 @@ class SubscriptionAccess:
     until: object = None
 
 
-ALL_MODULES = {key: True for key in ("websites", "memberships", "attendance", "payments")}
+ALL_MODULES = {key: True for key in ("websites", "memberships", "attendance", "payments", "pos")}
 
 
 def access_for_gym(gym, today=None):

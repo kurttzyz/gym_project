@@ -28,7 +28,8 @@ their software invoice pages. Do not enter another gym's merchant credentials he
 1. Sign in as a platform superuser on the platform host. Open `/billing/` and
    Manage SaaS plans at `/billing/plans/`.
 2. Create a monthly or yearly PHP software plan with a price and the modules it
-   includes: website, member management, attendance/front desk, and gym payments.
+   includes: website, member management, attendance/front desk, gym payments, and
+   optional POS/inventory.
    No sample plans/prices are inserted into real data. Archiving a plan prevents
    new assignment without cancelling existing contracts.
 3. Open a gym's platform detail → Manage platform subscription. Assign a plan,
@@ -149,3 +150,8 @@ provider integration. Existing tenant COPAY credentials are intentionally not re
 The provided COPAY guide has no recurring debit/tokenization API, so stored-card
 recurring billing is not claimed. Scheduling/email workers and official tax invoice
 integration also remain future work.
+
+POS is a separate module, default off on managed plans. Existing invoice/trial
+snapshots without a `pos` key stay unchanged. Branch/staff setup can be used when
+attendance or POS is included. Existing POS receipt reads remain available during
+restriction for authorized owners/original cashiers, like member payment receipts.

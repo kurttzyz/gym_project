@@ -5,8 +5,8 @@ from platform_core.models import SaaSPlan
 class SaaSPlanForm(forms.ModelForm):
     class Meta:
         model = SaaSPlan
-        fields = ("name", "price", "period", "websites", "memberships", "attendance", "payments", "is_active")
-        labels = {"price": "Platform subscription price (PHP)", "payments": "Gym payment module", "is_active": "Available for new assignments"}
+        fields = ("name", "price", "period", "websites", "memberships", "attendance", "payments", "pos", "is_active")
+        labels = {"price": "Platform subscription price (PHP)", "payments": "Gym payment module", "pos": "POS and inventory", "is_active": "Available for new assignments"}
 
 
 class AssignmentForm(forms.Form):

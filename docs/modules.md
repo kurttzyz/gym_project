@@ -23,9 +23,9 @@ gym_core/                        Tenant operational application
   urls.py, views.py              Existing gym member portal and owner dashboard
 tenant_data/                     Existing tenant branch model and migrations
 pos/                             Tenant application
-  products/                      Planned product catalog
-  inventory/                     Planned stock ledger
-  sales/                         Planned sales/receipts/refunds
+  products/                      Tenant product catalog in pos/models.py and pos/views.py
+  inventory/                     Branch balances and stock movements
+  sales/                         Cash/verified transfer sales, receipts, full refunds
 payments/                        Tenant member-to-gym payment application
   gateway_adapters/              Provider-neutral contract and COPAY deposit adapter
   recurring_billing/             Planned recurring collections
@@ -41,7 +41,9 @@ config/                          Router/admin infrastructure and compatibility i
 ```
 
 Domain folders marked Planned are architectural boundaries, not implemented
-business features. POS and automatic recurring payment collection remain planned.
+business features. Automatic recurring payment collection remains planned.
+Retail POS, branch inventory, receipts, full refunds, and daily retail summaries
+are implemented; see [POS](pos.md).
 Platform SaaS plans, invoices, verified payment recording, and service/module access
 controls are implemented; see [platform billing](platform-billing.md). QR attendance, branch management, and limited front-desk staff
 permissions are implemented; see [attendance](attendance.md). Gym-priced plan publishing, membership requests, and private contact
@@ -101,7 +103,9 @@ explicit commercial agreement; no split payments are assumed.
 Current platform URLs belong to `platform_core` and require a platform superuser.
 Current gym portal URLs belong to `gym_core` and require an active gym membership.
 `websites` owns shared presentation and per-gym branding. Public websites, member portals, and owner website customization are implemented.
-Staff POS and further gym-owner business management remain planned.
+Further gym-owner business management remains planned. Staff/manager POS access
+now permits retail checkout and their own receipts, with owner-only product, stock,
+refund, and retail report management.
 Staff/manager roles currently grant front-desk attendance access; owner-only
 member, payment, branding, branch, and employee management stays restricted. These should share tenant-local records and services, not
 separate code copies. Owner/manager/staff/member role names already exist, but

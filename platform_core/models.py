@@ -14,6 +14,7 @@ class SaaSPlan(models.Model):
     memberships = models.BooleanField(default=True)
     attendance = models.BooleanField(default=True)
     payments = models.BooleanField(default=True)
+    pos = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -22,7 +23,7 @@ class SaaSPlan(models.Model):
 
     @property
     def modules(self):
-        return {key: getattr(self, key) for key in ("websites", "memberships", "attendance", "payments")}
+        return {key: getattr(self, key) for key in ("websites", "memberships", "attendance", "payments", "pos")}
 
     def __str__(self):
         return self.name

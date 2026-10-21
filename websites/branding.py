@@ -23,4 +23,6 @@ def branding(request):
         "branding_logo": site.logo_url if site else (gym.logo_url if gym else ""),
         "is_gym_owner": owner,
         "is_front_desk": front_desk,
+        "is_pos_staff": bool(front_desk and getattr(request, "saas_access", None)
+                             and request.saas_access.allowed and request.saas_access.modules.get("pos", False)),
     }

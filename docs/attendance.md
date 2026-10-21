@@ -96,8 +96,9 @@ Django signing-key fallback is retained; do not rotate it casually.
 | `/manage/branches/` | Owner: create/edit/disable branches |
 | `/manage/staff/` | Owner: create and enable/disable front-desk access |
 
-Staff/managers cannot manage member profiles, plans, payments, branding, branches,
-or staff accounts. Platform superuser status alone grants no tenant attendance
+Staff/managers cannot manage member profiles, plans, membership payments, branding,
+branches, or staff accounts. With the POS module they can also record retail sales
+and view their own receipts; retail stock, prices, refunds, and reports remain owner-only. Platform superuser status alone grants no tenant attendance
 access. Revoked staff access is checked on every request, including existing
 sessions. Mutating actions require same-origin CSRF-protected POST. Members see
 only their own attendance; staff pages expose only operational member name/number,

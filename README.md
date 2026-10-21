@@ -66,7 +66,7 @@ are separate from tenant membership terms and payment records.
 
 Owner website editing is available at `/manage/website/` and the owner dashboard
 at `/manage/` on each gym domain. Member portals are at `/portal/`. Self-service
-signup and POS transactions are not implemented yet. Branch management and
+signup is not implemented yet. Retail POS and branch inventory are implemented. Branch management and
 supervised QR check-in/attendance are implemented. COPAY one-time membership payments are implemented and
 remain disabled until each gym has its own merchant configuration. Owners can enroll approved applications or walk-in members,
 assign/renew dated terms, manually activate/freeze/resume/cancel access, and issue
@@ -139,7 +139,7 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 138 checks
+The Django runner executes a subprocess integration suite containing 164 checks
 and four direct routing/calendar/middleware tests, plus seven COPAY protocol tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
@@ -218,3 +218,13 @@ their own software invoices at `/billing/` on their domain. Verified payments ar
 recorded by Powerhouse, with automatic next-invoice creation and dated service/module
 controls. SaaS collections are separate from gym-member COPAY payments. Apply central
 migrations once before restarting this release. See the [platform billing guide](docs/platform-billing.md).
+
+## Retail POS and branch inventory
+
+Gym owners manage products at `/manage/products/`, stock at `/manage/inventory/`,
+and daily retail totals at `/manage/sales/report/`. Staff/managers use `/pos/` to
+review and record cash or verified external bank sales, then print receipts.
+Full refunds and optional stock returns are owner-only. Retail, member, and platform
+billing ledgers remain separate. Existing gyms can install the module with Retry
+setup; managed SaaS agreements require POS in their current entitlements. See the
+[POS setup, transactions, and permissions guide](docs/pos.md).

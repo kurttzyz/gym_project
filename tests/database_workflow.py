@@ -49,6 +49,9 @@ import hashlib
 from gym_core.attendance.models import AttendanceVisit, AttendanceScan
 from gym_core.attendance.services import card_code, record_scan, rotate_card
 from concurrent.futures import ThreadPoolExecutor
+from pos.models import Product, StockBalance, StockMovement, Sale, SaleLine, SaleRefund
+from pos.services import quote_cart, commit_sale, adjust_stock, refund_sale, PosError
+import time
 from platform_core.models import SaaSPlan, GymSubscription, PlatformInvoice, PlatformPayment, SubscriptionEvent
 from platform_core.billing.services import (assign_plan as assign_saas_plan, record_payment as record_saas_payment,
     change_plan as change_saas_plan, change_state as change_saas_state, access_for_gym, BillingError)
@@ -2029,6 +2032,335 @@ class GymDatabaseTests(unittest.TestCase):
         self.settle_saas(invoice)
         self.assertTrue(access_for_gym(self.a).allowed)
         self.assertEqual(PlatformPayment.objects.get(invoice=invoice).amount,Decimal("0.00"))
+
+
+    def retail_product(self, alias=None, **updates):
+        data={"sku":"SKU-"+uuid4().hex[:12],"name":"Test water bottle","price":Decimal("25.00")}
+        data.update(updates)
+        return Product.objects.using(alias or self.alias_a).create(**data)
+
+    def retail_stock(self, product, quantity=10, branch=None):
+        with gym_database(self.alias_a):
+            return adjust_stock(self.alias_a,product.pk,(branch or self.branch_a).pk,quantity,"Initial received stock",uuid4(),self.user.pk)
+
+    def retail_quote(self, product=None, quantity=1, actor=None, branch=None):
+        product=product or self.retail_product()
+        if not StockBalance.objects.using(self.alias_a).filter(product=product,location=branch or self.branch_a).exists():
+            self.retail_stock(product,10,branch)
+        with gym_database(self.alias_a):
+            token,data=quote_cart(self.a,(actor or self.user).pk,(branch or self.branch_a).pk,[(product.pk,quantity)],self.a.name)
+        return product,token,data
+
+    def retail_sale(self, product=None, quantity=1, actor=None, branch=None):
+        product,token,data=self.retail_quote(product,quantity,actor,branch)
+        with gym_database(self.alias_a):
+            sale=commit_sale(self.alias_a,self.a,(actor or self.user).pk,token,"cash",Decimal("1000.00"))
+        return product,sale,token
+
+    def test_pos_owner_manages_products_with_unique_sku_and_nonnegative_price(self):
+        client=self.tenant_client()
+        data={"sku":"wtr-"+uuid4().hex[:8],"name":"Water bottle","price":"25.00","low_stock_threshold":"4","is_active":"on"}
+        self.assertEqual(client.post("/manage/products/new/",data).status_code,302)
+        product=Product.objects.using(self.alias_a).get(sku=data["sku"].upper())
+        data["sku"]=product.sku.lower()
+        self.assertEqual(client.post("/manage/products/new/",data).status_code,200)
+        data["price"]="-1"
+        self.assertEqual(client.post(f"/manage/products/{product.pk}/",data).status_code,200)
+        product.refresh_from_db(using=self.alias_a);self.assertEqual(product.price,Decimal("25.00"))
+        self.assertContainsText(client.get("/manage/products/?q=Water"),"Water bottle")
+        self.assertFalse(Product.objects.using(self.alias_b).exists())
+
+    def test_pos_stock_adjustments_are_audited_idempotent_and_cannot_go_negative(self):
+        product=self.retail_product();request_id=uuid4()
+        with gym_database(self.alias_a):
+            first=adjust_stock(self.alias_a,product.pk,self.branch_a.pk,10,"Supplier delivery",request_id,self.user.pk)
+            self.assertEqual(adjust_stock(self.alias_a,product.pk,self.branch_a.pk,10,"Supplier delivery",request_id,self.user.pk).pk,first.pk)
+            with self.assertRaises(PosError):adjust_stock(self.alias_a,product.pk,self.branch_a.pk,9,"Different",request_id,self.user.pk)
+            with self.assertRaises(PosError):adjust_stock(self.alias_a,product.pk,self.branch_a.pk,-11,"Too much",uuid4(),self.user.pk)
+            with self.assertRaises(PosError):adjust_stock(self.alias_a,product.pk,self.branch_a.pk,0,"Zero",uuid4(),self.user.pk)
+        balance=StockBalance.objects.using(self.alias_a).get(product=product)
+        self.assertEqual(balance.quantity,10)
+        self.assertEqual(StockMovement.objects.using(self.alias_a).filter(balance=balance).count(),1)
+        self.assertEqual(first.balance_after,10)
+
+    def test_pos_cash_sale_uses_signed_prices_and_server_calculated_change(self):
+        product,token,data=self.retail_quote(quantity=3)
+        response=self.tenant_client().post("/pos/confirm/",{"quote":token,"method":"cash","tendered":"100.00","total":"0.01","unit_price":"0.01"})
+        self.assertEqual(response.status_code,302)
+        sale=Sale.objects.using(self.alias_a).get()
+        self.assertEqual(sale.total,Decimal("75.00"));self.assertEqual(sale.change,Decimal("25.00"))
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,7)
+        self.assertEqual(SaleLine.objects.using(self.alias_a).get(sale=sale).unit_price,Decimal("25.00"))
+        self.assertEqual(StockMovement.objects.using(self.alias_a).get(sale=sale).delta,-3)
+        self.assertContainsText(self.tenant_client().get(response["Location"]),"Retail payment receipt")
+
+    def test_pos_cash_shortfall_and_unverified_bank_transfer_cannot_record_sale(self):
+        product,token,data=self.retail_quote(quantity=2)
+        with gym_database(self.alias_a):
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",Decimal("49.99"))
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"bank",reference="BANK1",note="Not confirmed",confirmed=False)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,10)
+        self.assertEqual(self.tenant_client().post("/pos/confirm/",{"quote":token,"method":"bank","reference":"BANK1","note":"Receipt"}).status_code,200)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+
+    def test_pos_same_checkout_is_idempotent_even_after_quote_expiry(self):
+        product,sale,token=self.retail_sale(quantity=2)
+        with gym_database(self.alias_a),patch("django.core.signing.time.time",return_value=time.time()+700):
+            repeated=commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",Decimal("1000.00"))
+            self.assertEqual(repeated.pk,sale.pk)
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",Decimal("500.00"))
+        self.assertEqual(Sale.objects.using(self.alias_a).count(),1)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,8)
+
+    def test_pos_expired_new_quote_and_tampered_or_foreign_quotes_are_rejected(self):
+        product,token,data=self.retail_quote()
+        with gym_database(self.alias_a),patch("django.core.signing.time.time",return_value=time.time()+700):
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",100)
+        with gym_database(self.alias_a):
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token[:-5]+"bogus","cash",100)
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.b,self.user.pk,token,"cash",100)
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk+100000,token,"cash",100)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+
+    def test_pos_price_changes_and_hidden_products_invalidate_unpaid_quote(self):
+        product,token,data=self.retail_quote()
+        Product.objects.using(self.alias_a).filter(pk=product.pk).update(price="30.00")
+        with gym_database(self.alias_a):
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",100)
+        Product.objects.using(self.alias_a).filter(pk=product.pk).update(price="25.00",is_active=False)
+        with gym_database(self.alias_a):
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",100)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,10)
+
+    def test_pos_multi_item_stock_failure_rolls_back_entire_sale(self):
+        first=self.retail_product();second=self.retail_product(name="Protein bar",price=Decimal("40.00"))
+        self.retail_stock(first,5);self.retail_stock(second,2)
+        with gym_database(self.alias_a):
+            token,data=quote_cart(self.a,self.user.pk,self.branch_a.pk,[(first.pk,2),(second.pk,2)],self.a.name)
+            adjust_stock(self.alias_a,second.pk,self.branch_a.pk,-1,"One damaged item",uuid4(),self.user.pk)
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",1000)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists());self.assertFalse(SaleLine.objects.using(self.alias_a).exists())
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=first).quantity,5)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=second).quantity,1)
+        self.assertFalse(StockMovement.objects.using(self.alias_a).filter(kind="sale").exists())
+
+    def test_pos_concurrent_sales_cannot_oversell_the_last_unit(self):
+        product=self.retail_product();self.retail_stock(product,1)
+        with gym_database(self.alias_a):
+            tokens=[quote_cart(self.a,self.user.pk,self.branch_a.pk,[(product.pk,1)],self.a.name)[0] for _ in range(2)]
+        def sell(token):
+            try:
+                with gym_database(self.alias_a):
+                    try:return str(commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",100).pk)
+                    except PosError:return "out-of-stock"
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as executor:results=list(executor.map(sell,tokens))
+        self.assertEqual(results.count("out-of-stock"),1)
+        self.assertEqual(Sale.objects.using(self.alias_a).count(),1)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,0)
+
+    def test_pos_concurrent_retries_record_one_sale_and_one_stock_deduction(self):
+        product,token,data=self.retail_quote()
+        def sell(_):
+            try:
+                with gym_database(self.alias_a):return commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",100).pk
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as executor:results=list(executor.map(sell,range(2)))
+        self.assertEqual(results[0],results[1]);self.assertEqual(Sale.objects.using(self.alias_a).count(),1)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,9)
+        self.assertEqual(StockMovement.objects.using(self.alias_a).filter(kind="sale").count(),1)
+
+    def test_pos_duplicate_cart_products_merge_and_receipt_snapshots_survive_edits(self):
+        product=self.retail_product();self.retail_stock(product,10)
+        original_name=product.name;original_sku=product.sku
+        with gym_database(self.alias_a):
+            token,data=quote_cart(self.a,self.user.pk,self.branch_a.pk,[(product.pk,1),(product.pk,2)],"Original gym brand")
+            sale=commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",100)
+        Product.objects.using(self.alias_a).filter(pk=product.pk).update(name="Renamed",sku="CHANGED",price="99.00",is_active=False)
+        Location.objects.using(self.alias_a).filter(pk=self.branch_a.pk).update(name="Renamed branch")
+        line=SaleLine.objects.using(self.alias_a).get(sale=sale)
+        self.assertEqual(line.quantity,3);self.assertEqual(line.name,original_name);self.assertEqual(line.sku,original_sku)
+        self.assertEqual(sale.gym_name,"Original gym brand");self.assertEqual(sale.branch_name,"Main")
+        self.assertEqual(line.unit_price,Decimal("25.00"))
+
+    def test_pos_bank_reference_is_verified_and_cannot_be_reused_case_insensitively(self):
+        product,token,data=self.retail_quote()
+        reference="Bank-"+uuid4().hex
+        with gym_database(self.alias_a):
+            sale=commit_sale(self.alias_a,self.a,self.user.pk,token,"bank",reference=reference,note="Verified receipt",confirmed=True)
+            second_token,data=quote_cart(self.a,self.user.pk,self.branch_a.pk,[(product.pk,1)],self.a.name)
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,second_token,"bank",reference=reference.upper(),note="Same receipt",confirmed=True)
+        self.assertEqual(sale.total,Decimal("25.00"));self.assertEqual(sale.change,0)
+        self.assertEqual(Sale.objects.using(self.alias_a).count(),1)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,9)
+
+    def test_pos_staff_can_sell_but_only_see_their_own_receipts(self):
+        account=self.desk_account();other=self.desk_account()
+        product,sale,token=self.retail_sale(actor=account)
+        client=Client(HTTP_HOST=self.domain_a.hostname);client.force_login(account)
+        self.assertEqual(client.get("/pos/").status_code,200)
+        self.assertContainsText(client.get("/pos/sales/"),sale.number)
+        self.assertEqual(client.get(f"/pos/sales/{sale.pk}/").status_code,200)
+        stranger=Client(HTTP_HOST=self.domain_a.hostname);stranger.force_login(other)
+        self.assertEqual(stranger.get(f"/pos/sales/{sale.pk}/").status_code,404)
+        self.assertNotIn(sale.number.encode(),stranger.get("/pos/sales/").content)
+        self.assertEqual(self.tenant_client().get(f"/pos/sales/{sale.pk}/").status_code,200)
+        Membership.objects.filter(organization=self.a,user=account).update(is_active=False)
+        self.assertEqual(client.get("/pos/").status_code,404)
+        self.assertEqual(client.get(f"/pos/sales/{sale.pk}/").status_code,404)
+
+    def test_pos_owner_only_catalog_stock_refund_and_reports(self):
+        product,sale,token=self.retail_sale()
+        for role in ("staff","manager"):
+            account=self.desk_account(role);client=Client(HTTP_HOST=self.domain_a.hostname);client.force_login(account)
+            for path in ("/manage/products/","/manage/products/new/","/manage/inventory/","/manage/inventory/adjust/",f"/manage/sales/{sale.pk}/refund/","/manage/sales/report/"):
+                self.assertEqual(client.get(path).status_code,404)
+        account=self.desk_account("member");client=Client(HTTP_HOST=self.domain_a.hostname);client.force_login(account)
+        self.assertEqual(client.get("/pos/").status_code,404)
+        self.assertEqual(client.get(f"/pos/sales/{sale.pk}/").status_code,404)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/pos/").status_code,302)
+
+    def test_pos_mutations_require_csrf_and_confirmation_is_post_only(self):
+        product,token,data=self.retail_quote()
+        client=self.tenant_client(csrf=True)
+        self.assertEqual(client.post("/pos/confirm/",{"quote":token,"method":"cash","tendered":"100"}).status_code,403)
+        self.assertEqual(client.post("/manage/inventory/adjust/",{}).status_code,403)
+        self.assertEqual(client.post("/manage/products/new/",{}).status_code,403)
+        self.assertEqual(self.tenant_client().get("/pos/confirm/").status_code,405)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+
+    def test_pos_full_refund_restocks_once_and_preserves_original_sale(self):
+        product,sale,token=self.retail_sale(quantity=2)
+        reference="REFUND-"+uuid4().hex
+        with gym_database(self.alias_a):
+            first=refund_sale(self.alias_a,sale.pk,self.user.pk,reference,"Customer return verified",True)
+            self.assertEqual(refund_sale(self.alias_a,sale.pk,self.user.pk,reference,"Customer return verified",True).pk,first.pk)
+            with self.assertRaises(PosError):refund_sale(self.alias_a,sale.pk,self.user.pk,reference,"Customer return verified",False)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,10)
+        self.assertEqual(SaleRefund.objects.using(self.alias_a).filter(sale=sale).count(),1)
+        self.assertEqual(StockMovement.objects.using(self.alias_a).filter(sale=sale,kind="refund").count(),1)
+        sale.refresh_from_db(using=self.alias_a);self.assertEqual(sale.total,Decimal("50.00"))
+        self.assertContainsText(self.tenant_client().get(f"/pos/sales/{sale.pk}/"),"Full refund recorded")
+
+    def test_pos_refund_without_restock_does_not_change_balance_or_hidden_product(self):
+        product,sale,token=self.retail_sale()
+        Product.objects.using(self.alias_a).filter(pk=product.pk).update(is_active=False)
+        Location.objects.using(self.alias_a).filter(pk=self.branch_a.pk).update(is_active=False)
+        data={"reference":"REF-"+uuid4().hex,"note":"Damaged item; refund paid","confirmed":"on","amount":"0.01"}
+        self.assertEqual(self.tenant_client().post(f"/manage/sales/{sale.pk}/refund/",data).status_code,302)
+        refund=SaleRefund.objects.using(self.alias_a).get(sale=sale)
+        self.assertEqual(refund.amount,Decimal("25.00"));self.assertFalse(refund.restocked)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,9)
+        self.assertFalse(StockMovement.objects.using(self.alias_a).filter(sale=sale,kind="refund").exists())
+
+    def test_pos_refund_confirmation_and_unique_reference_protect_stock(self):
+        product,sale,token=self.retail_sale()
+        product,second,token=self.retail_sale(product=product)
+        reference="REF-"+uuid4().hex
+        client=self.tenant_client()
+        self.assertEqual(client.post(f"/manage/sales/{sale.pk}/refund/",{"reference":reference,"note":"No confirmation","restock":"on"}).status_code,200)
+        self.assertFalse(SaleRefund.objects.using(self.alias_a).exists())
+        with gym_database(self.alias_a):
+            refund_sale(self.alias_a,sale.pk,self.user.pk,reference,"Refund paid",True)
+            with self.assertRaises(PosError):refund_sale(self.alias_a,second.pk,self.user.pk,reference.upper(),"Duplicate reference",True)
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,9)
+        self.assertEqual(SaleRefund.objects.using(self.alias_a).count(),1)
+
+    def test_pos_inventory_is_branch_specific_and_low_stock_includes_missing_balances(self):
+        product=self.retail_product();self.retail_stock(product,10)
+        empty=self.retail_product(name="Empty product")
+        second=Location.objects.using(self.alias_a).create(name="Second retail branch")
+        self.retail_stock(product,2,second)
+        response=self.tenant_client().get(f"/manage/inventory/?location={second.pk}&low_only=on")
+        self.assertContainsText(response,"2 units available")
+        self.assertContainsText(response,"Empty product")
+        self.assertContainsText(response,"0 units available")
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product,location=self.branch_a).quantity,10)
+        with gym_database(self.alias_a):
+            with self.assertRaises(PosError):quote_cart(self.a,self.user.pk,second.pk,[(product.pk,3)],self.a.name)
+
+    def test_pos_retail_reports_exclude_other_billing_and_use_refund_recording_date(self):
+        product,sale,token=self.retail_sale(quantity=3)
+        with gym_database(self.alias_a):refund_sale(self.alias_a,sale.pk,self.user.pk,"REF-"+uuid4().hex,"Returned and refunded",True)
+        response=self.tenant_client().get("/manage/sales/report/")
+        self.assertContainsText(response,"₱75.00");self.assertContainsText(response,"₱0.00")
+        yesterday=timezone.now()-timedelta(days=1)
+        Sale.objects.using(self.alias_a).filter(pk=sale.pk).update(created_at=yesterday)
+        response=self.tenant_client().get("/manage/sales/report/")
+        self.assertContainsText(response,"₱-75.00")
+        response=self.tenant_client().get("/manage/sales/report/?date=invalid")
+        self.assertEqual(response.status_code,200);self.assertContainsText(response,"Enter a valid date")
+
+    def test_pos_other_gym_product_and_sale_ids_do_not_cross_databases(self):
+        product,sale,token=self.retail_sale()
+        Membership.objects.create(organization=self.b,user=self.user,role="owner")
+        other=self.tenant_client(self.domain_b)
+        self.assertEqual(other.get(f"/pos/sales/{sale.pk}/").status_code,404)
+        self.assertEqual(other.get(f"/manage/products/{product.pk}/").status_code,404)
+        self.assertEqual(other.post("/pos/confirm/",{"quote":token,"method":"cash","tendered":"100"}).status_code,302)
+        self.assertFalse(Sale.objects.using(self.alias_b).exists());self.assertFalse(Product.objects.using(self.alias_b).exists())
+        for table in ("pos_product","pos_stockbalance","pos_stockmovement","pos_sale","pos_saleline","pos_salerefund"):
+            self.assertNotIn(table,connection.introspection.table_names())
+            self.assertIn(table,connections[self.alias_a].introspection.table_names())
+            self.assertIn(table,connections[self.alias_b].introspection.table_names())
+
+    def test_pos_saas_entitlements_gate_new_operations_but_keep_old_receipts_readable(self):
+        product,sale,token=self.retail_sale()
+        subscription,invoice=self.saas_assignment(plan=self.saas_plan(pos=False),trial=14)
+        client=self.tenant_client()
+        self.assertEqual(client.get("/pos/").status_code,503)
+        self.assertEqual(client.post("/pos/confirm/",{"quote":token,"method":"cash","tendered":"1000"}).status_code,503)
+        self.assertEqual(client.get("/manage/inventory/").status_code,503)
+        self.assertEqual(client.get(f"/pos/sales/{sale.pk}/").status_code,200)
+        change_saas_state(subscription.pk,"suspend",self.user.pk,"Service paused")
+        self.assertEqual(client.get(f"/pos/sales/{sale.pk}/").status_code,200)
+        self.assertEqual(client.get("/pos/").status_code,503)
+
+    def test_pos_only_plan_can_manage_shared_branches_staff_and_redirect_cashiers(self):
+        subscription,invoice=self.saas_assignment(plan=self.saas_plan(pos=True,attendance=False,memberships=False),trial=14)
+        self.assertEqual(self.tenant_client().get("/manage/branches/").status_code,200)
+        self.assertEqual(self.tenant_client().get("/manage/staff/").status_code,200)
+        self.assertEqual(self.tenant_client().get("/pos/").status_code,200)
+        self.assertEqual(self.tenant_client().get("/desk/").status_code,503)
+        account=self.desk_account();client=Client(HTTP_HOST=self.domain_a.hostname)
+        self.assertEqual(client.post("/accounts/login/",{"username":account.username,"password":"Desk-Strong-84!"})["Location"],"/pos/")
+
+    def test_pos_ui_review_supports_multiple_rows_and_rejects_oversized_formsets(self):
+        product=self.retail_product();self.retail_stock(product,10)
+        data={"location":str(self.branch_a.pk),"cart-TOTAL_FORMS":"2","cart-INITIAL_FORMS":"0",
+            "cart-MIN_NUM_FORMS":"0","cart-MAX_NUM_FORMS":"20","cart-0-product":str(product.pk),"cart-0-quantity":"2"}
+        response=self.tenant_client().post("/pos/",data)
+        self.assertContainsText(response,"Total: ₱50.00 PHP")
+        self.assertIn(b'name="quote"',response.content)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+        data["cart-TOTAL_FORMS"]="1000"
+        response=self.tenant_client().post("/pos/",data)
+        self.assertContainsText(response,"Please submit at most 20 forms")
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+
+    def test_pos_disabled_branch_cannot_complete_an_existing_quote(self):
+        product,token,data=self.retail_quote()
+        Location.objects.using(self.alias_a).filter(pk=self.branch_a.pk).update(is_active=False)
+        with gym_database(self.alias_a):
+            with self.assertRaises(PosError):commit_sale(self.alias_a,self.a,self.user.pk,token,"cash",100)
+        self.assertFalse(Sale.objects.using(self.alias_a).exists())
+        self.assertEqual(StockBalance.objects.using(self.alias_a).get(product=product).quantity,10)
+
+    def test_pos_upgrade_button_installs_module_without_touching_members_or_branding(self):
+        from django.db.migrations.recorder import MigrationRecorder
+        member,term,code=self.active_card()
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep brand intact")
+        with connections[self.alias_a].schema_editor() as editor:
+            for model in (StockMovement,SaleRefund,SaleLine,StockBalance,Sale,Product):editor.delete_model(model)
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="pos").delete()
+        self.make_platform_admin()
+        self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"),"Retry setup")
+        self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/retry-setup/").status_code,302)
+        self.assertEqual(Product.objects.using(self.alias_a).count(),0)
+        self.assertTrue(MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).exists())
+        self.assertEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title,"Keep brand intact")
 
 
 

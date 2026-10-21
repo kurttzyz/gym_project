@@ -9,8 +9,20 @@ from .auth_views import GymLoginView
 from payments import views as payment_views
 from .attendance import views as attendance_views
 from platform_core.billing import views as billing_views
+from pos import views as pos_views
 
 urlpatterns = [
+    path("pos/", pos_views.checkout, name="pos-checkout"),
+    path("pos/confirm/", pos_views.confirm_sale, name="pos-confirm"),
+    path("pos/sales/", pos_views.sales, name="pos-sales"),
+    path("pos/sales/<uuid:sale_id>/", pos_views.receipt, name="pos-receipt"),
+    path("manage/products/", pos_views.products, name="pos-products"),
+    path("manage/products/new/", pos_views.edit_product, name="pos-product-new"),
+    path("manage/products/<uuid:product_id>/", pos_views.edit_product, name="pos-product-edit"),
+    path("manage/inventory/", pos_views.inventory, name="pos-inventory"),
+    path("manage/inventory/adjust/", pos_views.adjustment, name="pos-adjustment"),
+    path("manage/sales/<uuid:sale_id>/refund/", pos_views.refund, name="pos-refund"),
+    path("manage/sales/report/", pos_views.report, name="pos-report"),
     path("billing/", billing_views.tenant_billing, name="tenant-saas-billing"),
     path("billing/invoices/<uuid:invoice_id>/", billing_views.tenant_invoice, name="tenant-saas-invoice"),
     path("desk/", attendance_views.scanner, name="attendance-scanner"),
