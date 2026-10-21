@@ -12,8 +12,9 @@ from .models import PasswordRecovery
 from .recovery import RecoveryForm,queue_recovery,valid_request
 
 
-def private_response(response):
-    response['Referrer-Policy']='no-referrer'
+def private_response(response, *, form=False):
+    # no-referrer makes Chromium submit forms with Origin: null.
+    response['Referrer-Policy']='same-origin' if form else 'no-referrer'
     response['X-Robots-Tag']='noindex, nofollow'
     return response
 
@@ -31,7 +32,7 @@ def request_reset(request):
             # Same response regardless of account existence, throttle or DB state.
             pass
         return redirect('member-reset-requested')
-    return private_response(render(request,'self_service/reset_request.html',{'form':form}))
+    return private_response(render(request,'self_service/reset_request.html',{'form':form}),form=True)
 
 
 @never_cache
@@ -75,7 +76,7 @@ def confirm_reset(request,recovery_id,token):
                     form=fresh
     except (DatabaseError,GymDatabaseUnavailable,OSError):
         valid,form=False,None
-    return private_response(render(request,'self_service/reset_confirm.html',{'valid':valid,'form':form}))
+    return private_response(render(request,'self_service/reset_confirm.html',{'valid':valid,'form':form}),form=True)
 
 
 @never_cache

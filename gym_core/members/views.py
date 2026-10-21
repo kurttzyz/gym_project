@@ -170,5 +170,6 @@ def activate_account(request, token):
         "site": request.website, "member": invitation.member, "new_form": new_form,
         "existing_form": existing_form, "waiver": waiver,
     })
-    response["Referrer-Policy"] = "no-referrer"
+    # Preserve the same-origin POST Origin header while hiding invitation URLs from other sites.
+    response["Referrer-Policy"] = "same-origin"
     return response

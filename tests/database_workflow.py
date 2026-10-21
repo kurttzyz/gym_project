@@ -1206,9 +1206,13 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertIn("no-store", response["Cache-Control"])
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
         token = re.search(r'/activate/([A-Za-z0-9_-]+)/', response.content.decode()).group(1)
-        client = Client(HTTP_HOST=self.domain_a.hostname)
+        client = Client(HTTP_HOST=self.domain_a.hostname, enforce_csrf_checks=True)
         username = "new-member-" + uuid4().hex
-        response = client.post(f"/activate/{token}/", self.claim_payload(username))
+        form_page = client.get(f"/activate/{token}/", secure=True)
+        self.assertEqual(form_page["Referrer-Policy"], "same-origin")
+        data = {**self.claim_payload(username), "csrfmiddlewaretoken": client.cookies["csrftoken"].value}
+        self.assertEqual(client.post(f"/activate/{token}/", data, secure=True, HTTP_ORIGIN="null").status_code, 403)
+        response = client.post(f"/activate/{token}/", data, secure=True, HTTP_ORIGIN="https://"+self.domain_a.hostname)
         self.assertEqual(response.status_code, 302)
         member.refresh_from_db(using=self.alias_a)
         account = get_user_model().objects.get(pk=member.user_id)
@@ -1217,7 +1221,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertFalse(account.is_staff or account.is_superuser)
         self.assertTrue(Membership.objects.filter(organization=self.a, user=account, role="member").exists())
         self.assertContainsText(client.get("/portal/"), member.member_number)
-        self.assertEqual(client.post(f"/activate/{token}/", self.claim_payload()).status_code, 404)
+        self.assertEqual(client.post(f"/activate/{token}/", {**self.claim_payload(),"csrfmiddlewaretoken":client.cookies["csrftoken"].value}, secure=True, HTTP_ORIGIN="https://"+self.domain_a.hostname).status_code, 404)
 
     def test_expired_replaced_and_other_gym_invites_cannot_be_claimed(self):
         member, _ = self.enrolled_member()
@@ -3352,14 +3356,16 @@ class GymDatabaseTests(unittest.TestCase):
         path=f'/accounts/reset/{row.pk}/{token}/'
         wrong=Client(HTTP_HOST=self.domain_b.hostname)
         self.assertEqual(wrong.get(path).status_code,404)
-        client=Client(HTTP_HOST=self.domain_a.hostname)
+        client=Client(HTTP_HOST=self.domain_a.hostname,enforce_csrf_checks=True)
         response=client.get(path)
         self.assertEqual(response.status_code,302);self.assertIn('set-password',response['Location'])
         clean_url=response['Location']
         self.assertContainsText(client.get(clean_url),'Choose a new password')
-        self.assertEqual(client.get(clean_url)['Referrer-Policy'],'no-referrer')
+        self.assertEqual(client.get(clean_url,secure=True)['Referrer-Policy'],'same-origin')
         data={'new_password1':'Recovered-Member-Password-93!','new_password2':'Recovered-Member-Password-93!'}
-        self.assertEqual(client.post(clean_url,data).status_code,302)
+        data['csrfmiddlewaretoken']=client.cookies['csrftoken'].value
+        self.assertEqual(client.post(clean_url,data,secure=True,HTTP_ORIGIN='null').status_code,403)
+        self.assertEqual(client.post(clean_url,data,secure=True,HTTP_ORIGIN='https://'+self.domain_a.hostname).status_code,302)
         user.refresh_from_db();self.assertTrue(user.check_password(data['new_password1']))
         row.refresh_from_db();self.assertEqual(row.status,'used')
         self.assertContainsText(client.get(clean_url),'unavailable or expired')
