@@ -1,10 +1,1 @@
-{% extends "gyms/base.html" %}{% block content %}
-<h1>Sign in</h1>
-<form class="card" method="post">
-  {% csrf_token %}{{ form.as_p }}<input
-    type="hidden"
-    name="next"
-    value="{{ next }}"
-  /><button>Sign in</button>
-</form>
-{% if tenant %}<p><a href="{% url 'member-reset-request' %}">Forgot your member password?</a></p>{% endif %}{% endblock %}
+{% extends 'gyms/base.html' %}{% block title %}Sign in · {{ branding_name }}{% endblock %}{% block content %}<div class="auth-heading"><div class="auth-symbol">{% include 'gyms/icon.html' with icon='dumbbell' %}</div><span class="eyebrow">{% if tenant %}Your gym. Your space.{% else %}The business behind stronger gyms{% endif %}</span><h1>Welcome back.</h1><p>{% if tenant %}Sign in to your {{ branding_name }} account.{% else %}Sign in to your platform workspace.{% endif %}</p></div><form class="card" method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button style="width:100%;margin-top:8px">Sign in {% include 'gyms/icon.html' with icon='arrow' %}</button></form>{% if tenant %}<p class="auth-footnote"><a href="{% url 'member-reset-request' %}">Forgot your member password?</a></p>{% endif %}<p class="auth-footnote">Your next chapter starts with showing up.</p>{% endblock %}

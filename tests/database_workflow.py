@@ -555,7 +555,7 @@ class GymDatabaseTests(unittest.TestCase):
             site = WebsiteSettings.objects.using(self.alias_a).get(pk=1)
             self.assertEqual(site.primary_color, original.primary_color)
             self.assertEqual(site.template, original.template)
-            self.assertIn(f"background:{original.primary_color}".encode(), response.content)
+            self.assertIn(f"--brand:{original.primary_color}".encode(), response.content)
 
     def test_website_text_is_escaped_in_public_template(self):
         self.tenant_client().post("/manage/website/", self.website_payload(
@@ -3192,6 +3192,77 @@ class GymDatabaseTests(unittest.TestCase):
             sweep_notifications.run()
         self.assertNotIn(str(row.pk),[call.args[0] for call in dispatch.call_args_list])
         row.refresh_from_db();self.assertEqual(row.status,'expired')
+
+
+    def test_dashboard_owner_summaries_use_own_records_and_production_receipts(self):
+        from gym_core.dashboard_data import owner_overview
+        _,member,session=self.class_fixture()
+        _,sandbox_member,_=self.class_fixture(hour=2)
+        term=MemberSubscription.objects.using(self.alias_a).get(member=member)
+        sandbox_term=MemberSubscription.objects.using(self.alias_a).get(member=sandbox_member)
+        with gym_database(self.alias_a):
+            PaymentOrder.objects.create(subscription=term,merchant_reference='LIVE'+uuid4().hex,merchant_code='fixture',
+                environment='production',payment_method='TEST',amount=100,net_amount=90,status='paid',paid_at=timezone.now())
+            PaymentOrder.objects.create(subscription=sandbox_term,merchant_reference='TEST'+uuid4().hex,merchant_code='fixture',
+                environment='sandbox',payment_method='TEST',amount=100,net_amount=100,status='paid',paid_at=timezone.now())
+            data=owner_overview({'memberships':True,'payments':True,'attendance':True,'websites':True})
+        self.assertEqual(data['active_members'],2)
+        self.assertEqual(data['month_receipts'],90)
+        self.assertEqual(len(data['recent_members']),2)
+        self.assertEqual(len(data['attendance_chart']),7)
+        with gym_database(self.alias_b):
+            other=owner_overview({'memberships':True,'payments':True,'attendance':True,'websites':True})
+        self.assertEqual(other['active_members'],0);self.assertEqual(other['month_receipts'],0)
+        response=self.tenant_client().get('/manage/')
+        self.assertIn('no-store',response['Cache-Control'])
+        self.assertContainsText(response,'COPAY received')
+        self.assertContainsText(response,'90.00')
+        self.assertNotIn(b'190.00',response.content)
+
+    def test_dashboard_attendance_periods_count_actual_local_visits(self):
+        from gym_core.dashboard_data import owner_overview
+        member,term,code=self.active_card()
+        self.scan_card(code)
+        AttendanceVisit.objects.using(self.alias_a).update(checked_in_at=timezone.now()-timedelta(days=20))
+        modules={'attendance':True}
+        with gym_database(self.alias_a):
+            week=owner_overview(modules,7);month=owner_overview(modules,30)
+        self.assertEqual(week['period_checkins'],0);self.assertEqual(month['period_checkins'],1)
+        self.assertEqual(sum(day['value'] for day in month['attendance_chart']),1)
+        self.assertEqual(sum(day['height']>0 for day in month['attendance_chart']),1)
+        self.assertContainsText(self.tenant_client().get('/manage/?period=30'),'check-ins in the last 30 days')
+
+    def test_dashboard_member_overview_and_navigation_do_not_expose_management(self):
+        user,member,session=self.class_fixture()
+        book_class(self.alias_a,session.pk,member.pk,user.pk)
+        client=self.member_client_for(user)
+        response=client.get('/portal/')
+        self.assertIn('no-store',response['Cache-Control'])
+        self.assertContainsText(response,'Strength fundamentals')
+        self.assertContainsText(response,'Main')
+        self.assertContainsText(response,'Your memberships')
+        self.assertNotIn(b'href="/manage/members/"',response.content)
+        self.assertNotIn(b'href="/manage/notifications/"',response.content)
+        staff=self.desk_account()
+        desk=Client(HTTP_HOST=self.domain_a.hostname);desk.force_login(staff)
+        response=desk.get('/desk/')
+        self.assertIn(b'href="/desk/classes/"',response.content)
+        self.assertNotIn(b'href="/manage/members/"',response.content)
+        self.assertNotIn(b'Administration',response.content)
+
+    def test_dashboard_platform_portfolio_search_and_setup_filters(self):
+        self.make_platform_admin()
+        response=self.client.get('/',{'q':self.a.slug})
+        self.assertContainsText(response,self.a.slug)
+        self.assertNotIn(self.b.slug.encode(),response.content)
+        self.assertContainsText(response,'Add another gym')
+        Organization.objects.filter(pk=self.a.pk).update(database_ready=False)
+        response=self.client.get('/',{'q':self.a.slug,'status':'setup'})
+        self.assertContainsText(response,self.a.slug)
+        self.assertContainsText(response,'Needs setup')
+        response=self.client.get('/',{'q':self.a.slug,'status':'ready'})
+        self.assertNotIn(f'<strong>{self.a.name}</strong>'.encode(),response.content)
+        self.assertContainsText(response,'No gyms match this view')
 
 
 if __name__ == "__main__":

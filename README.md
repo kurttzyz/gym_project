@@ -240,3 +240,7 @@ Owners configure branded email and review delivery history at `/manage/notificat
 ### Member self-service
 
 Members can edit their own contact/emergency information at `/portal/profile/`, request a renewal at `/portal/renewals/`, view `/portal/payments/`, and change their shared login password at `/portal/password/`. Owners review `/manage/renewals/`; approval creates a pending term without charging or activating access. Member login recovery is available from the sign-in page, using central account email with single-use gym-bound links kept outside tenant-owner history. See [member self-service and release setup](docs/member-self-service.md).
+
+### Professional workspaces
+
+The platform, gym-owner, staff, and member dashboards now share a responsive navigation shell, accessible page search, consistent management screens, and live summaries from their authorized records. Each gym retains its own logo and colors. Public website themes are refined as well. See [workspace design and metric definitions](docs/workspace-design.md). This redesign adds no migrations or dependencies; production deployments must collect and serve the updated static assets.

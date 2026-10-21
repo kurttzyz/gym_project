@@ -6,9 +6,13 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError, connection, transaction
+from django.db.models import Count,Q,Prefetch
+from django.core.paginator import Paginator
+from platform_core.models import GymSubscription
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
+from django.views.decorators.cache import never_cache
 
 from config.database_router import gym_database
 from tenant_data.models import Location
@@ -52,9 +56,20 @@ def organizations(request):
 
 
 @platform_required
+@never_cache
 def dashboard(request):
-    gyms = Organization.objects.all()
-    return render(request, "gyms/dashboard.html", {"gyms": gyms})
+    query=request.GET.get('q','').strip()[:160]
+    status=request.GET.get('status','')
+    gyms=Organization.objects.order_by('-created_at','id').annotate(owner_count=Count('memberships',filter=Q(
+        memberships__role='owner',memberships__is_active=True),distinct=True)).prefetch_related(Prefetch(
+        'domains',queryset=GymDomain.objects.filter(is_active=True,verified_at__isnull=False).order_by('hostname'),to_attr='dashboard_domains'))
+    if query:gyms=gyms.filter(Q(name__icontains=query)|Q(slug__icontains=query))
+    if status in {'ready','setup'}:gyms=gyms.filter(database_ready=status=='ready')
+    page=Paginator(gyms,20).get_page(request.GET.get('page'))
+    return render(request,'gyms/dashboard.html',{'gyms':page,'page':page,'query':query,'status':status,
+        'gym_count':Organization.objects.count(),'ready_count':Organization.objects.filter(database_ready=True).count(),
+        'domain_count':GymDomain.objects.filter(is_active=True,verified_at__isnull=False).count(),
+        'managed_count':GymSubscription.objects.count()})
 
 
 @platform_required
