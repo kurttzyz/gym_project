@@ -46,6 +46,18 @@ LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "dashboard"
 LOGOUT_REDIRECT_URL = "login"
 
+LOGGING = globals().get("LOGGING", {
+    "version": 1,
+    "disable_existing_loggers": False,
+})
+LOGGING.setdefault("handlers", {})["csrf_console"] = {
+    "class": "logging.StreamHandler",
+}
+LOGGING.setdefault("loggers", {})["django.security.csrf"] = {
+    "handlers": ["csrf_console"],
+    "level": "WARNING",
+    "propagate": False,
+}
 # Application definition
 
 INSTALLED_APPS = [
