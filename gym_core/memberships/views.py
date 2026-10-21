@@ -43,7 +43,7 @@ def edit_plan(request, plan_id=None):
 
 @owner_page
 def applications(request):
-    page = Paginator(MembershipApplication.objects.select_related("plan"), 25).get_page(request.GET.get("page"))
+    page = Paginator(MembershipApplication.objects.select_related("plan", "subscription__member"), 25).get_page(request.GET.get("page"))
     return render(request, "memberships/applications.html", {"page": page})
 
 

@@ -8,7 +8,7 @@ class WebsiteSettingsForm(forms.ModelForm):
         fields = (
             "display_name", "template", "primary_color", "logo_url", "hero_image_url",
             "tagline", "hero_title", "hero_text", "about_title", "about_text",
-            "contact_email", "contact_phone", "address", "opening_hours",
+            "contact_email", "contact_phone", "address", "opening_hours", "waiver_text",
         )
         widgets = {
             "primary_color": forms.TextInput(attrs={"type": "color"}),

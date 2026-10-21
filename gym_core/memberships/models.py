@@ -60,3 +60,60 @@ class MembershipApplication(models.Model):
             Lower("email"), "plan", condition=models.Q(status__in=["new", "contacted"]),
             name="unique_pending_membership_application",
         )]
+
+
+class MemberSubscription(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending activation"
+        ACTIVE = "active", "Active"
+        FROZEN = "frozen", "Frozen"
+        CANCELLED = "cancelled", "Cancelled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    member = models.ForeignKey("gym_core.MemberProfile", on_delete=models.PROTECT, related_name="subscriptions")
+    plan = models.ForeignKey(MembershipPlan, on_delete=models.PROTECT, related_name="subscriptions")
+    application = models.OneToOneField(MembershipApplication, null=True, blank=True, on_delete=models.PROTECT, related_name="subscription")
+    plan_name = models.CharField(max_length=100)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    period = models.CharField(max_length=10, choices=MembershipPlan.Period.choices)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    starts_on = models.DateField()
+    expires_on = models.DateField()
+    frozen_on = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-starts_on", "-created_at", "id"]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(expires_on__gt=models.F("starts_on")), name="subscription_positive_term"),
+            models.CheckConstraint(condition=models.Q(price__gte=0), name="subscription_nonnegative_price"),
+        ]
+
+    @property
+    def access_status(self):
+        from django.utils import timezone
+        today = timezone.localdate()
+        if not self.member.is_active:
+            return "Member disabled"
+        if self.status != self.Status.ACTIVE:
+            return self.get_status_display()
+        if today < self.starts_on:
+            return "Scheduled"
+        if today >= self.expires_on:
+            return "Expired"
+        return "Active"
+
+    @property
+    def allows_entry(self):
+        return self.access_status == "Active"
+
+
+class MembershipEvent(models.Model):
+    subscription = models.ForeignKey(MemberSubscription, on_delete=models.PROTECT, related_name="events")
+    action = models.CharField(max_length=20)
+    actor_id = models.PositiveBigIntegerField()
+    note = models.TextField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]

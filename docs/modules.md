@@ -15,8 +15,8 @@ platform_core/                   Central platform control plane
 accounts/                        Central identities/authentication (existing)
 gyms/                            Central registry, domain/access models (existing)
 gym_core/                        Tenant operational application
-  members/                       Planned gym member records
-  memberships/                   Published plans, applications, owner review; paid activation planned
+  members/                       Profiles, emergency contacts, single-use account invitations
+  memberships/                   Plans, applications, enrollment, dated terms and lifecycle audit
   attendance/                    Planned check-ins and QR attendance
   staff/                         Planned employee roles and permissions
   trainers/                      Planned trainers
@@ -43,7 +43,9 @@ config/                          Router/admin infrastructure and compatibility i
 Domain folders marked Planned are architectural boundaries, not implemented
 business features. Billing, POS, recurring payment collection, and attendance
 remain planned. Gym-priced plan publishing, membership requests, and private contact
-inboxes are implemented; paid subscriptions and activation are not. Subscription
+inboxes, member profiles, invitation enrollment, and manually managed membership
+terms are implemented. Activation requires an owner action and a reason; it does
+not collect or verify payment. Subscription
 prices (such as PHP 2,999 SaaS and PHP 1,000 gym membership) are proposed pricing,
 not hardcoded application defaults. Concrete payment providers are not configured.
 Celery/Redis and notification/billing workers are also planned, not running.

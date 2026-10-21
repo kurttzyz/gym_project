@@ -4,6 +4,7 @@ from websites import views as website_views
 from websites.public_pages import views as public_views
 from .memberships import views as membership_views
 from . import views
+from .members import views as member_views
 from .auth_views import GymLoginView
 
 urlpatterns = [
@@ -14,6 +15,15 @@ urlpatterns = [
     path("join/thanks/", public_views.join_thanks, name="join-thanks"),
     path("contact/", public_views.contact, name="contact"),
     path("contact/thanks/", public_views.contact_thanks, name="contact-thanks"),
+    path("activate/<str:token>/", member_views.activate_account, name="member-activate"),
+    path("manage/members/", member_views.members, name="owner-members"),
+    path("manage/members/new/", member_views.edit_member, name="member-new"),
+    path("manage/members/<uuid:member_id>/", member_views.detail, name="member-detail"),
+    path("manage/members/<uuid:member_id>/edit/", member_views.edit_member, name="member-edit"),
+    path("manage/members/<uuid:member_id>/invite/", member_views.invite, name="member-invite"),
+    path("manage/members/<uuid:member_id>/subscriptions/", member_views.add_subscription, name="member-subscription-new"),
+    path("manage/members/<uuid:member_id>/subscriptions/<uuid:subscription_id>/action/", member_views.subscription_action, name="member-subscription-action"),
+    path("manage/applications/<uuid:application_id>/enroll/", member_views.enroll, name="application-enroll"),
     path("portal/", views.tenant_dashboard, name="dashboard"),
     path("manage/", views.owner_dashboard, name="owner-dashboard"),
     path("manage/plans/", membership_views.plans, name="owner-plans"),

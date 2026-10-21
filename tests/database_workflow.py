@@ -31,6 +31,12 @@ from tenant_data.models import Location
 from websites.models import ContactMessage, WebsiteSettings
 from gym_core.memberships.models import MembershipApplication, MembershipPlan
 from decimal import Decimal
+from datetime import date, timedelta
+import re
+from gym_core.members.models import MemberProfile, MemberInvitation
+from gym_core.memberships.models import MemberSubscription, MembershipEvent
+from gym_core.members.services import issue_invitation, end_of_term
+from gym_core.members.forms import waiver_version
 from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
@@ -108,6 +114,32 @@ class GymDatabaseTests(unittest.TestCase):
                 "phone": "09170000000", "message": "I would like to get started.", "consent": "on"}
         data.update(updates)
         return data
+
+    def enrolled_member(self, **updates):
+        plan = self.plan()
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        client.post("/join/", self.application_payload(plan, **updates))
+        application = MembershipApplication.objects.using(self.alias_a).get()
+        self.tenant_client().post(f"/manage/applications/{application.pk}/review/", {"status": "approved"})
+        response = self.tenant_client().post(f"/manage/applications/{application.pk}/enroll/")
+        self.assertEqual(response.status_code, 302)
+        subscription = MemberSubscription.objects.using(self.alias_a).select_related("member", "application").get(application=application)
+        return subscription.member, subscription
+
+    def invitation_token(self, member):
+        with gym_database(self.alias_a):
+            return issue_invitation(self.alias_a, member.pk, self.user.pk)
+
+    def claim_payload(self, username=None, **updates):
+        data = {"mode": "new", "new-username": username or "member-" + uuid4().hex,
+                "new-password1": "Member-Strong-84!", "new-password2": "Member-Strong-84!"}
+        data.update(updates)
+        return data
+
+    def membership_action(self, member, subscription, action, note="Offline arrangement confirmed by owner"):
+        return self.tenant_client().post(
+            f"/manage/members/{member.pk}/subscriptions/{subscription.pk}/action/", {"action": action, "note": note}
+        )
 
     def test_existing_data_migrated(self):
         for index in range(2):
@@ -929,11 +961,16 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
         with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(MembershipEvent)
+            editor.delete_model(MemberSubscription)
+            editor.delete_model(MemberInvitation)
+            editor.delete_model(MemberProfile)
             editor.delete_model(MembershipApplication)
             editor.delete_model(MembershipPlan)
             editor.delete_model(ContactMessage)
+            editor.remove_field(WebsiteSettings, WebsiteSettings._meta.get_field("waiver_text"))
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core").delete()
-        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="websites", name="0002_contactmessage").delete()
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="websites", name__in=["0002_contactmessage", "0003_websitesettings_waiver_text"]).delete()
         self.user.is_superuser = True
         self.user.save()
         self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"), "Retry setup")
@@ -942,6 +979,278 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertEqual(ContactMessage.objects.using(self.alias_a).count(), 0)
         self.assertEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title, "Keep existing brand")
         self.assertContainsText(Client(HTTP_HOST=self.domain_a.hostname).get("/"), "Keep existing brand")
+
+
+    def test_approved_application_enrolls_once_with_original_quote(self):
+        member, subscription = self.enrolled_member()
+        application = subscription.application
+        self.assertEqual(subscription.status, "pending")
+        self.assertEqual(subscription.price, application.quoted_price)
+        self.assertEqual(member.full_name, application.full_name)
+        self.assertIsNone(member.user_id)
+        self.assertEqual(self.tenant_client().post(f"/manage/applications/{application.pk}/enroll/").status_code, 302)
+        self.assertEqual(MemberProfile.objects.using(self.alias_a).count(), 1)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).count(), 1)
+        self.assertEqual(MemberProfile.objects.using(self.alias_b).count(), 0)
+
+    def test_unapproved_application_cannot_be_enrolled(self):
+        plan = self.plan()
+        Client(HTTP_HOST=self.domain_a.hostname).post("/join/", self.application_payload(plan))
+        application = MembershipApplication.objects.using(self.alias_a).get()
+        self.assertEqual(self.tenant_client().post(f"/manage/applications/{application.pk}/enroll/").status_code, 302)
+        self.assertFalse(MemberProfile.objects.using(self.alias_a).exists())
+        self.assertEqual(self.tenant_client().get(f"/manage/applications/{application.pk}/enroll/").status_code, 405)
+
+    def test_owner_creates_searches_and_edits_member_profile(self):
+        client = self.tenant_client()
+        data = {"full_name": "Walk-in Member", "email": "walkin@example.com", "phone": "09171111111",
+                "is_active": "on", "emergency_contact_name": "Family", "emergency_contact_phone": "09172222222"}
+        self.assertEqual(client.post("/manage/members/new/", data).status_code, 302)
+        member = MemberProfile.objects.using(self.alias_a).get(email=data["email"])
+        self.assertContainsText(client.get("/manage/members/?q=Walk-in"), "Walk-in Member")
+        data["full_name"] = "Updated Member"
+        data["user_id"] = str(self.user.pk)
+        self.assertEqual(client.post(f"/manage/members/{member.pk}/edit/", data).status_code, 302)
+        member.refresh_from_db(using=self.alias_a)
+        self.assertEqual(member.full_name, "Updated Member")
+        self.assertIsNone(member.user_id)
+        self.assertEqual(MemberProfile.objects.using(self.alias_b).count(), 0)
+
+    def test_profile_changes_revoke_invites_without_overwriting_identity_or_waiver(self):
+        member, _ = self.enrolled_member()
+        token = self.invitation_token(member)
+        data = {"full_name": member.full_name, "email": "changed@example.com", "phone": member.phone, "is_active": "on"}
+        client = self.tenant_client()
+        self.assertEqual(client.post(f"/manage/members/{member.pk}/edit/", data).status_code, 302)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get(f"/activate/{token}/").status_code, 404)
+        token = self.invitation_token(member)
+        data.pop("is_active")
+        self.assertEqual(client.post(f"/manage/members/{member.pk}/edit/", data).status_code, 302)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get(f"/activate/{token}/").status_code, 404)
+        MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).update(
+            user_id=self.user.pk, waiver_text="Recorded acceptance", waiver_accepted_at=timezone.now())
+        data.update({"is_active": "on", "user_id": "999999", "waiver_text": "Tampered"})
+        self.assertEqual(client.post(f"/manage/members/{member.pk}/edit/", data).status_code, 302)
+        member.refresh_from_db(using=self.alias_a)
+        self.assertEqual(member.user_id, self.user.pk)
+        self.assertEqual(member.waiver_text, "Recorded acceptance")
+        self.assertIsNotNone(member.waiver_accepted_at)
+
+    def test_profile_validation_rejects_future_birth_date_and_incomplete_emergency_details(self):
+        data = {"full_name": "Invalid profile", "email": "invalid@example.com", "phone": "123",
+                "date_of_birth": (timezone.localdate() + timedelta(days=1)).isoformat(),
+                "emergency_contact_name": "Someone", "is_active": "on"}
+        self.assertEqual(self.tenant_client().post("/manage/members/new/", data).status_code, 200)
+        self.assertFalse(MemberProfile.objects.using(self.alias_a).exists())
+
+    def test_membership_calendar_terms_handle_month_end_and_leap_years(self):
+        self.assertEqual(end_of_term(date(2026, 1, 31), "month"), date(2026, 2, 28))
+        self.assertEqual(end_of_term(date(2024, 2, 29), "year"), date(2025, 2, 28))
+        self.assertEqual(end_of_term(date(2026, 11, 30), "quarter"), date(2027, 2, 28))
+        self.assertEqual(end_of_term(date(2026, 12, 31), "day"), date(2027, 1, 1))
+
+    def test_manual_activation_requires_note_and_records_actor(self):
+        member, subscription = self.enrolled_member()
+        self.membership_action(member, subscription, "activate", note="")
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(subscription.status, "pending")
+        self.membership_action(member, subscription, "activate")
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(subscription.status, "active")
+        with gym_database(self.alias_a):
+            self.assertTrue(subscription.allows_entry)
+        event = MembershipEvent.objects.using(self.alias_a).get(subscription=subscription, action="activate")
+        self.assertEqual(event.actor_id, self.user.pk)
+        self.membership_action(member, subscription, "activate")
+        self.assertEqual(MembershipEvent.objects.using(self.alias_a).filter(subscription=subscription, action="activate").count(), 1)
+
+    def test_activation_rejects_overlapping_terms(self):
+        member, subscription = self.enrolled_member()
+        self.membership_action(member, subscription, "activate")
+        response = self.tenant_client().post(f"/manage/members/{member.pk}/subscriptions/", {
+            "plan": str(subscription.plan_id), "starts_on": (subscription.starts_on + timedelta(days=1)).isoformat()
+        })
+        self.assertEqual(response.status_code, 302)
+        other = MemberSubscription.objects.using(self.alias_a).exclude(pk=subscription.pk).get()
+        self.membership_action(member, other, "activate")
+        other.refresh_from_db(using=self.alias_a)
+        self.assertEqual(other.status, "pending")
+
+    def test_freeze_resume_and_cancellation_are_audited(self):
+        member, subscription = self.enrolled_member()
+        self.membership_action(member, subscription, "activate")
+        original_expiry = subscription.expires_on
+        frozen_date = subscription.starts_on
+        with patch("gym_core.members.services.timezone.localdate", return_value=frozen_date):
+            self.membership_action(member, subscription, "freeze")
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(subscription.status, "frozen")
+        with gym_database(self.alias_a):
+            self.assertFalse(subscription.allows_entry)
+        with patch("gym_core.members.services.timezone.localdate", return_value=frozen_date + timedelta(days=7)):
+            self.membership_action(member, subscription, "resume")
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(subscription.expires_on, original_expiry + timedelta(days=7))
+        self.assertEqual(subscription.status, "active")
+        self.membership_action(member, subscription, "cancel")
+        self.membership_action(member, subscription, "resume")
+        subscription.refresh_from_db(using=self.alias_a)
+        self.assertEqual(subscription.status, "cancelled")
+        self.assertEqual(MembershipEvent.objects.using(self.alias_a).filter(subscription=subscription).count(), 5)
+
+    def test_renewal_preserves_old_term_and_expiry_is_computed(self):
+        member, subscription = self.enrolled_member()
+        self.membership_action(member, subscription, "activate")
+        path = f"/manage/members/{member.pk}/subscriptions/"
+        data = {"plan": str(subscription.plan_id), "starts_on": subscription.expires_on.isoformat()}
+        self.tenant_client().post(path, data)
+        self.tenant_client().post(path, data)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).filter(member=member).count(), 2)
+        renewal = MemberSubscription.objects.using(self.alias_a).exclude(pk=subscription.pk).get()
+        self.membership_action(member, renewal, "activate")
+        renewal.refresh_from_db(using=self.alias_a)
+        with gym_database(self.alias_a):
+            self.assertEqual(renewal.access_status, "Scheduled")
+        subscription.refresh_from_db(using=self.alias_a)
+        with gym_database(self.alias_a), patch("django.utils.timezone.localdate", return_value=subscription.expires_on):
+            self.assertEqual(subscription.access_status, "Expired")
+            self.assertEqual(renewal.access_status, "Active")
+
+    def test_invitation_creates_member_chosen_account_and_single_use_link(self):
+        member, _ = self.enrolled_member()
+        response = self.tenant_client().post(f"/manage/members/{member.pk}/invite/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("no-store", response["Cache-Control"])
+        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        token = re.search(r'/activate/([A-Za-z0-9_-]+)/', response.content.decode()).group(1)
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        username = "new-member-" + uuid4().hex
+        response = client.post(f"/activate/{token}/", self.claim_payload(username))
+        self.assertEqual(response.status_code, 302)
+        member.refresh_from_db(using=self.alias_a)
+        account = get_user_model().objects.get(pk=member.user_id)
+        self.assertEqual(account.username, username)
+        self.assertTrue(account.check_password("Member-Strong-84!"))
+        self.assertFalse(account.is_staff or account.is_superuser)
+        self.assertTrue(Membership.objects.filter(organization=self.a, user=account, role="member").exists())
+        self.assertContainsText(client.get("/portal/"), member.member_number)
+        self.assertEqual(client.post(f"/activate/{token}/", self.claim_payload()).status_code, 404)
+
+    def test_expired_replaced_and_other_gym_invites_cannot_be_claimed(self):
+        member, _ = self.enrolled_member()
+        old = self.invitation_token(member)
+        current = self.invitation_token(member)
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        self.assertEqual(client.get(f"/activate/{old}/").status_code, 404)
+        self.assertEqual(Client(HTTP_HOST=self.domain_b.hostname).get(f"/activate/{current}/").status_code, 404)
+        MemberInvitation.objects.using(self.alias_a).filter(member=member, revoked_at__isnull=True).update(expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(client.get(f"/activate/{current}/").status_code, 404)
+        member.refresh_from_db(using=self.alias_a)
+        self.assertIsNone(member.user_id)
+
+    def test_existing_account_claim_does_not_reset_its_password_or_other_access(self):
+        member, _ = self.enrolled_member()
+        existing = get_user_model().objects.create_user(username="existing-" + uuid4().hex, password="Existing-Strong-84!")
+        Membership.objects.create(organization=self.b, user=existing, role="member")
+        original_hash = existing.password
+        token = self.invitation_token(member)
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        response = client.post(f"/activate/{token}/", {
+            "mode": "existing", "existing-username": existing.username, "existing-password": "Existing-Strong-84!"
+        })
+        self.assertEqual(response.status_code, 302)
+        existing.refresh_from_db()
+        member.refresh_from_db(using=self.alias_a)
+        self.assertEqual(existing.password, original_hash)
+        self.assertEqual(member.user_id, existing.pk)
+        self.assertTrue(existing.memberships.filter(organization=self.b).exists())
+
+    def test_invitation_does_not_reenable_revoked_gym_access(self):
+        member, _ = self.enrolled_member()
+        existing = get_user_model().objects.create_user(username="revoked-" + uuid4().hex, password="Existing-Strong-84!")
+        Membership.objects.create(organization=self.a, user=existing, role="member", is_active=False)
+        token = self.invitation_token(member)
+        response = Client(HTTP_HOST=self.domain_a.hostname).post(f"/activate/{token}/", {
+            "mode": "existing", "existing-username": existing.username, "existing-password": "Existing-Strong-84!"
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(existing.memberships.get(organization=self.a).is_active)
+        member.refresh_from_db(using=self.alias_a)
+        self.assertIsNone(member.user_id)
+
+    def test_configured_waiver_requires_acceptance_and_keeps_snapshot(self):
+        member, _ = self.enrolled_member()
+        text = "Test gym waiver version one."
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(waiver_text=text)
+        token = self.invitation_token(member)
+        data = self.claim_payload()
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        self.assertEqual(client.post(f"/activate/{token}/", data).status_code, 200)
+        data.update({"new-accept_waiver": "on", "new-waiver_version": waiver_version(text)})
+        self.assertEqual(client.post(f"/activate/{token}/", data).status_code, 302)
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(waiver_text="Changed after acceptance")
+        member.refresh_from_db(using=self.alias_a)
+        self.assertEqual(member.waiver_text, text)
+        self.assertIsNotNone(member.waiver_accepted_at)
+
+    def test_stale_waiver_submission_does_not_create_account(self):
+        member, _ = self.enrolled_member()
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(waiver_text="New waiver")
+        token = self.invitation_token(member)
+        username = "stale-" + uuid4().hex
+        data = self.claim_payload(username, **{"new-accept_waiver": "on", "new-waiver_version": waiver_version("Old waiver")})
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).post(f"/activate/{token}/", data).status_code, 200)
+        self.assertFalse(get_user_model().objects.filter(username=username).exists())
+
+    def test_member_login_and_portal_require_committed_enabled_profile(self):
+        member, _ = self.enrolled_member()
+        account = get_user_model().objects.create_user(username="profile-" + uuid4().hex, password="Member-Strong-84!")
+        Membership.objects.create(organization=self.a, user=account, role="member")
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        self.assertEqual(client.post("/accounts/login/", {"username": account.username, "password": "Member-Strong-84!"}).status_code, 200)
+        member.user_id = account.pk
+        member.save(using=self.alias_a)
+        self.assertEqual(client.post("/accounts/login/", {"username": account.username, "password": "Member-Strong-84!"}).status_code, 302)
+        self.assertContainsText(client.get("/portal/"), member.member_number)
+        MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).update(is_active=False)
+        self.assertEqual(client.get("/portal/").status_code, 404)
+
+    def test_member_portal_never_shows_another_members_details(self):
+        member, _ = self.enrolled_member()
+        other = MemberProfile.objects.using(self.alias_a).create(full_name="Other private member", email="other-private@example.com", phone="private-phone")
+        token = self.invitation_token(member)
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        client.post(f"/activate/{token}/", self.claim_payload())
+        response = client.get("/portal/")
+        self.assertNotIn(b"other-private@example.com", response.content)
+        self.assertNotIn(b"private-phone", response.content)
+        self.assertEqual(client.get(f"/manage/members/{other.pk}/").status_code, 404)
+
+    def test_member_management_and_invites_require_owner_post_and_csrf(self):
+        member, subscription = self.enrolled_member()
+        invite = f"/manage/members/{member.pk}/invite/"
+        self.assertEqual(self.tenant_client().get(invite).status_code, 405)
+        client = self.tenant_client(csrf=True)
+        self.assertEqual(client.post(invite).status_code, 403)
+        self.assertEqual(self.tenant_client(self.domain_b).get(f"/manage/members/{member.pk}/").status_code, 404)
+        Membership.objects.filter(user=self.user, organization=self.a).update(role="staff")
+        self.assertEqual(self.tenant_client().get("/manage/members/").status_code, 404)
+        self.assertEqual(self.tenant_client().post(invite).status_code, 404)
+
+    def test_cross_gym_plan_cannot_be_assigned_to_member(self):
+        member, _ = self.enrolled_member()
+        other_plan = self.plan(self.alias_b)
+        response = self.tenant_client().post(f"/manage/members/{member.pk}/subscriptions/", {
+            "plan": str(other_plan.pk), "starts_on": timezone.localdate().isoformat()
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).filter(member=member).count(), 1)
+
+    def test_member_and_subscription_tables_are_absent_from_platform_database(self):
+        tables = connection.introspection.table_names()
+        for name in ("gym_core_memberprofile", "gym_core_memberinvitation", "gym_core_membersubscription", "gym_core_membershipevent"):
+            self.assertNotIn(name, tables)
+            self.assertIn(name, connections[self.alias_a].introspection.table_names())
 
 
 if __name__ == "__main__":

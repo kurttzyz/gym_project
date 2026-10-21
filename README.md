@@ -52,7 +52,7 @@ billing and member-to-gym billing are separate domains and data stores.
 
 A gym (`Organization`) is a tenant; a `Location` is a branch in its database.
 Membership roles are owner, manager, staff, and member. These access memberships
-are separate from planned paid gym subscriptions.
+are separate from tenant membership terms and payment records.
 
 ## Endpoints
 
@@ -67,8 +67,11 @@ are separate from planned paid gym subscriptions.
 Owner website editing is available at `/manage/website/` and the owner dashboard
 at `/manage/` on each gym domain. Member portals are at `/portal/`. Self-service
 signup, branch editing, payment collection, attendance, and POS transactions
-are not implemented yet. Gym membership plans, applications, and contact inboxes
-are implemented; approval is not paid membership activation. See [architecture](docs/architecture.md).
+are not implemented yet. Owners can enroll approved applications or walk-in members,
+assign/renew dated terms, manually activate/freeze/resume/cancel access, and issue
+single-use member account invitations. Approval alone does not activate membership,
+and manual activation does not record or verify a payment. See the
+[member enrollment guide](docs/member-enrollment.md) and [architecture](docs/architecture.md).
 
 ## Configuration and security
 
@@ -135,7 +138,7 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 60 checks
+The Django runner executes a subprocess integration suite containing 81 checks
 and two direct database-routing boundary tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
@@ -167,7 +170,9 @@ start from common defaults; each gym's edits stay in its own database. See the
 [owner onboarding and website guide](docs/owner-websites.md).
 
 When upgrading, run both `manage.py migrate` and `manage.py migrate_gym_databases`
-before starting Django so existing gyms receive their website settings.
+before starting Django so existing gyms receive their website settings. For an
+individual gym, the platform detail page also offers Retry setup to install missing
+tenant tables without a per-gym terminal command.
 
 ## Try two gyms through the UI
 

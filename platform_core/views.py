@@ -13,7 +13,8 @@ from django.views.decorators.http import require_POST
 from config.database_router import gym_database
 from tenant_data.models import Location
 from websites.models import ContactMessage, WebsiteSettings
-from gym_core.memberships.models import MembershipPlan
+from gym_core.memberships.models import MembershipPlan, MemberSubscription
+from gym_core.members.models import MemberProfile
 from gyms.databases import GymDatabaseUnavailable, provision_database, ready_database
 from gyms.forms import DomainForm, GymForm, OwnerAccountForm
 from gyms.models import GymDomain, Membership, Organization
@@ -84,8 +85,10 @@ def gym_detail_context(request, gym, domain_form=None):
     try:
         with gym_database(ready_database(gym)):
             branches = list(Location.objects.all())
-            WebsiteSettings.objects.only("pk").get(pk=1)
+            WebsiteSettings.objects.get(pk=1)
             MembershipPlan.objects.exists()
+            MemberProfile.objects.exists()
+            MemberSubscription.objects.exists()
             ContactMessage.objects.exists()
     except (GymDatabaseUnavailable, DatabaseError, WebsiteSettings.DoesNotExist, OSError):
         database_error = True

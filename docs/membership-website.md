@@ -32,7 +32,10 @@ plan, contact details, and permission for the gym to contact the applicant.
    optionally feature it. Save; it appears on the public membership page immediately.
 4. A visitor requests that membership. Review the request under Review applications.
    Mark it Contacted, Approved, or Declined after following up with the applicant.
-5. Read contact submissions in the Gym inbox and mark them as read when handled.
+5. For an approved application, select Enroll member. This creates a member profile
+   and a pending dated membership using the original quote. Manage it under Members;
+   see [member enrollment](member-enrollment.md) for activation and account invitations.
+6. Read contact submissions in the Gym inbox and mark them as read when handled.
 
 Plans can be hidden instead of deleted. Existing applications retain a snapshot of
 the plan's name, price, and term, even when the plan changes. The server selects
@@ -41,10 +44,10 @@ pending requests for the same email/plan are prevented case-insensitively. Close
 applications cannot be reopened through the review endpoint.
 
 **An approved application is not an active paid membership.** This release does not
-collect payments, create member login accounts from applications, schedule recurring
-charges, or send emails. Owners follow up using the submitted contact details.
-Payment activation and account enrollment are separate workflows to implement with
-a configured provider. Public forms currently store requests in the gym's private
+collect payments, schedule recurring charges, or send emails. Owners can separately
+enroll an approved applicant, activate access manually with an audit note, and share
+a single-use invitation for the member to choose their own login. Public forms store
+requests in the gym's private
 database/inbox rather than sending them to an external messaging service.
 
 ## Owner routes
@@ -56,6 +59,7 @@ database/inbox rather than sending them to an external messaging service.
 | `/manage/plans/new/` | Create a plan |
 | `/manage/plans/<uuid>/` | Edit/publish/hide a plan |
 | `/manage/applications/` | Paginated private application list |
+| `/manage/members/` | Member profiles, terms, lifecycle, and account invitations |
 | `/manage/inbox/` | Paginated private contact inbox |
 | `/manage/website/` | Existing branding/content editor |
 

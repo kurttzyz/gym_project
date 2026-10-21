@@ -26,6 +26,7 @@ class WebsiteSettings(models.Model):
     contact_phone = models.CharField(max_length=50, blank=True)
     address = models.TextField(max_length=600, blank=True)
     opening_hours = models.TextField(max_length=600, blank=True)
+    waiver_text = models.TextField(max_length=10000, blank=True, help_text="Optional gym waiver shown during member account activation.")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -44,9 +44,18 @@ class PortalAuthenticationForm(AuthenticationForm):
     def confirm_login_allowed(self, user):
         super().confirm_login_allowed(user)
         gym = getattr(self.request, "tenant", None)
-        allowed = (Membership.objects.filter(
-            organization=gym, user=user, is_active=True
-        ).exists() if gym else user.is_superuser)
+        access = Membership.objects.filter(organization=gym, user=user, is_active=True).first() if gym else None
+        allowed = bool(access) if gym else user.is_superuser
+        if access and access.role == Membership.Role.MEMBER:
+            from config.database_router import gym_database
+            from django.db import DatabaseError
+            from gyms.databases import GymDatabaseUnavailable, ready_database
+            from gym_core.members.models import MemberProfile
+            try:
+                with gym_database(ready_database(gym)):
+                    allowed = MemberProfile.objects.filter(user_id=user.pk, is_active=True).exists()
+            except (DatabaseError, GymDatabaseUnavailable):
+                allowed = False
         if not allowed:
             raise forms.ValidationError(self.error_messages["invalid_login"], code="invalid_login",
                                         params={"username": self.username_field.verbose_name})
