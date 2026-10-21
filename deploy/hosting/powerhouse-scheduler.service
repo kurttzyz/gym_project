@@ -1,0 +1,19 @@
+[Unit]
+Description=Powerhouse background scheduler
+After=network.target redis-server.service
+
+[Service]
+User=megapaldo
+Group=megapaldo
+WorkingDirectory=/home/megapaldo/apps/gym_platform
+EnvironmentFile=/home/megapaldo/apps/gym_platform/.env
+StateDirectory=powerhouse-scheduler
+ExecStart=/home/megapaldo/apps/gym_platform/.venv/bin/celery -A platform_config.celery:app beat --loglevel=info --schedule=/var/lib/powerhouse-scheduler/beat --pidfile=
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

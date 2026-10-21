@@ -244,3 +244,7 @@ Members can edit their own contact/emergency information at `/portal/profile/`, 
 ### Professional workspaces
 
 The platform, gym-owner, staff, and member dashboards now share a responsive navigation shell, accessible page search, consistent management screens, and live summaries from their authorized records. Each gym retains its own logo and colors. Public website themes are refined as well. See [workspace design and metric definitions](docs/workspace-design.md). This redesign adds no migrations or dependencies; production deployments must collect and serve the updated static assets.
+
+### Automatic custom-domain hosting
+
+Optional VPS hosting automation checks gym ownership and DNS, configures an isolated Nginx site, issues HTTPS through Certbot, and reports progress/retries in the platform dashboard. A root-owned socket agent handles hosting separately from Django. See [one-time VPS setup and operating guide](docs/domain-hosting.md). External gym DNS records still require owner configuration. Disabled by default; this release adds a central `gyms` migration.

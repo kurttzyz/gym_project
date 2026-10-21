@@ -2,6 +2,8 @@ from functools import wraps
 import logging
 
 import psycopg
+from django.conf import settings
+from django.utils import timezone
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
@@ -140,6 +142,7 @@ def gym_detail_context(request, gym, domain_form=None):
     cards = [{"domain": domain, "links": portal_links(request, domain),
               "local": is_local_hostname(domain.hostname)} for domain in domains]
     return {
+        "hosting_enabled": settings.DOMAIN_HOSTING_ENABLED, "hosting_ipv4": settings.DOMAIN_HOSTING_IPV4,
         "gym": gym, "branches": branches, "database_error": database_error,
         "domain_form": domain_form if domain_form is not None else DomainForm(),
         "domain_cards": cards, "local_portals": local_portals_enabled(request),
@@ -203,7 +206,10 @@ def verify_gym_domain(request, slug, domain_id):
         if is_local_hostname(domain.hostname) and not local_portals_enabled(request):
             raise DomainVerificationError("Activate local domains only from the local development platform.")
         verify_domain(domain, local=is_local_hostname(domain.hostname))
-        messages.success(request, "Domain ownership verified. Website and owner-login links are available below.")
+        if settings.DOMAIN_HOSTING_ENABLED and not is_local_hostname(domain.hostname) and domain.hosting_status != "live":
+            messages.success(request, "Ownership verified. Automatic hosting checks will configure HTTPS once DNS routing is ready.")
+        else:
+            messages.success(request, "Domain ownership verified. Website and owner-login links are available below.")
     except DomainVerificationError as error:
         messages.error(request, str(error))
     return redirect("gym-detail", slug=slug)
@@ -221,4 +227,18 @@ def retry_gym_setup(request, slug):
     except (DomainVerificationError, GymDatabaseUnavailable, DatabaseError, psycopg.Error, OSError):
         logging.getLogger(__name__).exception("Gym setup retry failed for %s", gym.pk)
         messages.error(request, "Setup could not finish. Check the PostgreSQL service or contact the platform operator.")
+    return redirect("gym-detail", slug=slug)
+
+
+@platform_required
+@require_POST
+def retry_domain_hosting(request, slug, domain_id):
+    domain = get_object_or_404(GymDomain, pk=domain_id, organization__slug=slug, is_active=True)
+    if not settings.DOMAIN_HOSTING_ENABLED or is_local_hostname(domain.hostname):
+        raise PermissionDenied
+    # Do not release a live worker's lease or recreate already-live certificates.
+    if domain.hosting_status not in {"live", "provisioning"}:
+        GymDomain.objects.filter(pk=domain.pk).exclude(hosting_status__in=["live", "provisioning"]).update(
+            hosting_status="pending", hosting_message="Queued for hosting checks.", hosting_next_attempt=timezone.now())
+    messages.success(request, "Hosting checks queued. Refresh this page for progress.")
     return redirect("gym-detail", slug=slug)

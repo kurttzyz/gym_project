@@ -694,6 +694,51 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertEqual(before, (get_user_model().objects.count(), Organization.objects.count()))
         self.assertTrue(Membership.objects.filter(organization=self.a, user=self.user, role="owner").exists())
 
+    @override_settings(DOMAIN_HOSTING_ENABLED=True, DOMAIN_HOSTING_IPV4="203.0.113.1")
+    def test_automatic_domain_hosting_real_state_and_other_gym_unchanged(self):
+        from gyms.hosting import process_domain
+        self.user.is_superuser = True
+        self.user.save()
+        domain = GymDomain.objects.create(organization=self.a, hostname=f"auto-{uuid4().hex}.example.com")
+        before = (self.domain_b.verified_at, self.domain_b.hosting_status)
+        with patch("gyms.hosting.call_agent", return_value={"status": "waiting", "message": "Waiting for TXT"}):
+            process_domain(domain.pk)
+        domain.refresh_from_db()
+        self.assertEqual(domain.hosting_status, "waiting")
+        self.assertIsNone(domain.verified_at)
+        response = self.client.get(f"/gyms/{self.a.slug}/")
+        self.assertContainsText(response, "Waiting for TXT")
+        self.assertContainsText(response, "203.0.113.1")
+        retry = f"/gyms/{self.a.slug}/domains/{domain.pk}/hosting/"
+        self.assertEqual(self.client.post(retry).status_code, 302)
+        with patch("gyms.hosting.call_agent", return_value={"status": "live", "message": "HTTPS ready"}):
+            process_domain(domain.pk)
+        domain.refresh_from_db()
+        self.assertEqual(domain.hosting_status, "live")
+        self.assertIsNotNone(domain.verified_at)
+        self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"), f"https://{domain.hostname}/accounts/login/")
+        self.domain_b.refresh_from_db()
+        self.assertEqual((self.domain_b.verified_at, self.domain_b.hosting_status), before)
+
+    @override_settings(DOMAIN_HOSTING_ENABLED=True)
+    def test_hosting_retry_is_scoped_and_preserves_live_lease(self):
+        self.user.is_superuser = True
+        self.user.save()
+        domain = GymDomain.objects.create(organization=self.a, hostname=f"retry-{uuid4().hex}.example.com", hosting_status="failed")
+        self.assertEqual(self.client.post(f"/gyms/{self.b.slug}/domains/{domain.pk}/hosting/").status_code, 404)
+        path = f"/gyms/{self.a.slug}/domains/{domain.pk}/hosting/"
+        self.assertEqual(self.client.post(path).status_code, 302)
+        domain.refresh_from_db()
+        self.assertEqual(domain.hosting_status, "pending")
+        domain.hosting_status = "provisioning"
+        domain.hosting_next_attempt = timezone.now() + timedelta(minutes=8)
+        domain.save()
+        lease = domain.hosting_next_attempt
+        self.client.post(path)
+        domain.refresh_from_db()
+        self.assertEqual(domain.hosting_next_attempt, lease)
+        self.assertEqual(domain.hosting_status, "provisioning")
+
     def test_dashboard_dns_verification_requires_matching_proof_and_correct_gym(self):
         self.user.is_superuser = True
         self.user.save()
@@ -720,7 +765,8 @@ class GymDatabaseTests(unittest.TestCase):
 
     def test_onboarding_actions_require_platform_role_post_and_csrf(self):
         paths = (f"/gyms/{self.a.slug}/local-portal/", f"/gyms/{self.a.slug}/retry-setup/",
-                 f"/gyms/{self.a.slug}/domains/{self.domain_a.pk}/verify/")
+                 f"/gyms/{self.a.slug}/domains/{self.domain_a.pk}/verify/",
+                 f"/gyms/{self.a.slug}/domains/{self.domain_a.pk}/hosting/")
         for path in paths:
             self.assertEqual(self.client.post(path).status_code, 403)
         self.user.is_superuser = True

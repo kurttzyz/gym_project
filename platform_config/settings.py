@@ -201,3 +201,11 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {'notification-outbox': {
     'task':'gym_core.notifications.tasks.sweep_notifications','schedule':60.0}}
+
+# Opt-in VPS domain automation. The privileged agent has its own root-owned config.
+DOMAIN_HOSTING_ENABLED = os.environ.get("DOMAIN_HOSTING_ENABLED", "false").lower() == "true"
+DOMAIN_HOSTING_SOCKET = os.environ.get("DOMAIN_HOSTING_SOCKET", "/run/powerhouse-hosting/agent.sock")
+DOMAIN_HOSTING_IPV4 = os.environ.get("DOMAIN_HOSTING_IPV4", "")
+CELERY_BEAT_SCHEDULE["domain-hosting"] = {"task": "gyms.hosting.sweep_domains", "schedule": 60.0}
+# Trust only the header overwritten by the local reverse proxy.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

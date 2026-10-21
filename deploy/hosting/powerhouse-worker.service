@@ -1,0 +1,18 @@
+[Unit]
+Description=Powerhouse background worker
+After=network.target redis-server.service powerhouse-hosting.service
+
+[Service]
+User=megapaldo
+Group=megapaldo
+WorkingDirectory=/home/megapaldo/apps/gym_platform
+EnvironmentFile=/home/megapaldo/apps/gym_platform/.env
+ExecStart=/home/megapaldo/apps/gym_platform/.venv/bin/celery -A platform_config.celery:app worker --loglevel=info --concurrency=2 --hostname=powerhouse@%H
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

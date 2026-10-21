@@ -23,6 +23,7 @@ urlpatterns = [
     path("gyms/<slug:slug>/local-portal/", views.enable_local_portal, name="local-portal"),
     path("gyms/<slug:slug>/retry-setup/", views.retry_gym_setup, name="gym-retry"),
     path("gyms/<slug:slug>/domains/<int:domain_id>/verify/", views.verify_gym_domain, name="domain-verify"),
+    path("gyms/<slug:slug>/domains/<int:domain_id>/hosting/", views.retry_domain_hosting, name="domain-hosting-retry"),
     path("gyms/<slug:slug>/domains/", views.add_domain, name="domain-add"),
     path("gyms/<slug:slug>/", views.gym_detail, name="gym-detail"),
     path("platform-admin/", admin.site.urls),

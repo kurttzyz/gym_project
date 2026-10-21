@@ -83,6 +83,13 @@ class GymDomain(models.Model):
     verified_at = models.DateTimeField(null=True, blank=True, editable=False)
     is_active = models.BooleanField(default=True)
 
+    hosting_status = models.CharField(max_length=16, default="pending", choices=[
+        ("pending", "Pending"), ("waiting", "Waiting for DNS"),
+        ("provisioning", "Setting up HTTPS"), ("live", "Live"), ("failed", "Needs attention")])
+    hosting_message = models.CharField(max_length=300, blank=True)
+    hosting_checked_at = models.DateTimeField(null=True, blank=True)
+    hosting_next_attempt = models.DateTimeField(null=True, blank=True)
+
     def clean(self):
         super().clean()
         self.hostname = normalize_hostname(self.hostname)

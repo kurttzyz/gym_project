@@ -86,3 +86,11 @@ X-Forwarded-Host is not trusted. Cookies are host-only; production makes them se
 Tenant URLconfs do not expose platform onboarding or administration routes.
 
 See [owner websites](owner-websites.md) for owner permissions and customization.
+
+## Optional VPS automation
+
+The manual ingress steps above can now be handled by the opt-in
+[domain hosting agent](domain-hosting.md). Once installed, it independently checks
+A/TXT DNS, creates a managed Nginx site and certificate, and updates hosting status
+on the gym detail page. External DNS edits remain the domain owner's step. Without
+this opt-in installation, the existing manual and local workflows are unchanged.

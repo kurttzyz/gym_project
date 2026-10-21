@@ -73,6 +73,8 @@ def ensure_local_portal(gym):
 def portal_links(request, domain):
     if not domain.is_active or domain.verified_at is None:
         return None
+    if settings.DOMAIN_HOSTING_ENABLED and not is_local_hostname(domain.hostname) and domain.hosting_status != "live":
+        return None
     if is_local_hostname(domain.hostname):
         if not local_portals_enabled(request):
             return None
