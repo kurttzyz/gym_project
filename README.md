@@ -139,8 +139,8 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 117 checks
-and two direct database-routing boundary tests, plus seven COPAY protocol tests.
+The Django runner executes a subprocess integration suite containing 138 checks
+and four direct routing/calendar/middleware tests, plus seven COPAY protocol tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
 and PostgreSQL connection privileges, then removes only its own databases/roles.
@@ -208,3 +208,13 @@ Owners manage branches at `/manage/branches/` and front-desk accounts at
 to scan/check member access. Owners and members can view/print revocable QR cards;
 visits, checkouts, and scan results remain isolated in the gym database. See the
 [attendance setup, permissions, and device guide](docs/attendance.md).
+
+## Platform SaaS billing
+
+Powerhouse manages its own software plans and gym invoices at `/billing/` on the
+platform host. Assign a plan from a gym's platform detail page or during onboarding;
+existing gyms remain unmanaged until explicitly enrolled. Gym owners view only
+their own software invoices at `/billing/` on their domain. Verified payments are
+recorded by Powerhouse, with automatic next-invoice creation and dated service/module
+controls. SaaS collections are separate from gym-member COPAY payments. Apply central
+migrations once before restarting this release. See the [platform billing guide](docs/platform-billing.md).

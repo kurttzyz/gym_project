@@ -1,7 +1,7 @@
 {% extends "gyms/base.html" %}{% block content %}
 <p><a href="{% url 'dashboard' %}">← All gyms</a></p><h1>{{ gym.name }}</h1>
 {% if database_error %}<section class="card"><h2>Finish gym setup</h2><p>The database is not ready or could not be reached. The gym and its owner accounts have been preserved.</p><form method="post" action="{% url 'gym-retry' gym.slug %}">{% csrf_token %}<button>Retry setup</button></form></section>{% endif %}
-<h2>Gym owners</h2>{% for access in owners %}<p>{{ access.user.username }} · {{ access.user.email }}{% if not access.is_active %} (inactive access){% endif %}</p>{% empty %}<p>No owner assigned yet.</p>{% endfor %}
+<section class="card" style="margin:24px 0"><h2>Powerhouse subscription</h2><p>Manage this gym's software plan, invoices, and service access.</p><a class="button" href="{% url 'saas-subscription' gym.slug %}">Manage platform subscription</a></section><h2>Gym owners</h2>{% for access in owners %}<p>{{ access.user.username }} · {{ access.user.email }}{% if not access.is_active %} (inactive access){% endif %}</p>{% empty %}<p>No owner assigned yet.</p>{% endfor %}
 <p><a class="button" href="{% url 'owner-add' gym.slug %}">Create gym owner</a></p>
 <h2>Website &amp; owner login</h2>
 {% if local_portals %}<section class="card"><h3>Local testing, without setup commands</h3><p>Create a ready-to-use .localhost address. Modern Chrome and Edge resolve it on your PC without a hosts-file edit.</p><form method="post" action="{% url 'local-portal' gym.slug %}">{% csrf_token %}<button>Enable local portal</button></form></section>{% endif %}

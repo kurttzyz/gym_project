@@ -29,3 +29,36 @@ class ModuleDatabaseBoundaryTests(SimpleTestCase):
                     self.assertEqual(router.db_for_write(model), "default")
                     self.assertTrue(router.allow_migrate("default", label))
                     self.assertFalse(router.allow_migrate("gym_test_boundary", label))
+
+
+class SaaSCalendarTests(SimpleTestCase):
+    def test_renewals_preserve_anchor_across_short_months_and_leap_years(self):
+        from datetime import date
+        from platform_core.billing.services import end_of_period
+        february = end_of_period(date(2026, 1, 31), "month", 31)
+        self.assertEqual(february, date(2026, 2, 28))
+        self.assertEqual(end_of_period(february, "month", 31), date(2026, 3, 31))
+        self.assertEqual(end_of_period(date(2027, 2, 28), "year", 29), date(2028, 2, 29))
+
+
+class SubscriptionGateRenderingTests(SimpleTestCase):
+    def test_early_tenant_response_uses_gym_routes_without_tenant_database_queries(self):
+        from django.contrib.auth.models import AnonymousUser
+        from django.test import RequestFactory
+        from django.urls import get_urlconf, set_urlconf
+        from gyms.models import Organization
+        from tenants.subscription_middleware import TenantSubscriptionMiddleware
+        request = RequestFactory().get("/desk/")
+        request.tenant = Organization(name="Test gym", slug="test-gym")
+        request.user = AnonymousUser()
+        request.urlconf = "gym_core.urls"
+        previous = get_urlconf()
+        try:
+            set_urlconf("platform_config.urls")
+            response = TenantSubscriptionMiddleware(lambda request: None).block(request)
+            self.assertEqual(response.status_code, 503)
+            self.assertIn(b"Gym owner sign-in", response.content)
+            self.assertIn("no-store", response["Cache-Control"])
+            self.assertEqual(get_urlconf(), "platform_config.urls")
+        finally:
+            set_urlconf(previous)

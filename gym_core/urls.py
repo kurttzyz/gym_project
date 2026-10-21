@@ -8,8 +8,11 @@ from .members import views as member_views
 from .auth_views import GymLoginView
 from payments import views as payment_views
 from .attendance import views as attendance_views
+from platform_core.billing import views as billing_views
 
 urlpatterns = [
+    path("billing/", billing_views.tenant_billing, name="tenant-saas-billing"),
+    path("billing/invoices/<uuid:invoice_id>/", billing_views.tenant_invoice, name="tenant-saas-invoice"),
     path("desk/", attendance_views.scanner, name="attendance-scanner"),
     path("desk/attendance/", attendance_views.history, name="attendance-history"),
     path("desk/attendance/<uuid:visit_id>/checkout/", attendance_views.checkout_visit, name="attendance-checkout"),

@@ -49,6 +49,9 @@ import hashlib
 from gym_core.attendance.models import AttendanceVisit, AttendanceScan
 from gym_core.attendance.services import card_code, record_scan, rotate_card
 from concurrent.futures import ThreadPoolExecutor
+from platform_core.models import SaaSPlan, GymSubscription, PlatformInvoice, PlatformPayment, SubscriptionEvent
+from platform_core.billing.services import (assign_plan as assign_saas_plan, record_payment as record_saas_payment,
+    change_plan as change_saas_plan, change_state as change_saas_state, access_for_gym, BillingError)
 from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
@@ -1765,6 +1768,267 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertIsNotNone(member.qr_version)
         self.assertEqual(AttendanceVisit.objects.using(self.alias_a).count(),0)
         self.assertEqual(MemberSubscription.objects.using(self.alias_a).count(),1)
+
+
+    def saas_plan(self, **updates):
+        data={"name":"Platform plan "+uuid4().hex,"price":Decimal("2999.00"),"period":"month"}
+        data.update(updates)
+        return SaaSPlan.objects.create(**data)
+
+    def saas_assignment(self, gym=None, plan=None, trial=0, grace=0):
+        subscription=assign_saas_plan((gym or self.a).pk,(plan or self.saas_plan()).pk,trial,grace,self.user.pk)
+        return subscription,subscription.invoices.get(status="issued")
+
+    def make_platform_admin(self):
+        self.user.is_superuser=True;self.user.save()
+        return self.client
+
+    def settle_saas(self, invoice, reference=None):
+        return record_saas_payment(invoice.pk,self.user.pk,reference or "BANK-"+uuid4().hex,
+            "complimentary" if invoice.amount==0 else "bank","Receipt verified by platform operator")
+
+    def test_saas_unmanaged_gyms_keep_existing_operations(self):
+        self.assertEqual(access_for_gym(self.a).state,"Unmanaged")
+        self.assertTrue(access_for_gym(self.a).allowed)
+        self.assertEqual(self.tenant_client().get("/manage/").status_code,200)
+        self.assertEqual(self.tenant_client().get("/desk/").status_code,200)
+        self.assertFalse(GymSubscription.objects.filter(organization=self.a).exists())
+
+    def test_saas_platform_plan_crud_is_superuser_only_and_rejects_negative_prices(self):
+        self.assertEqual(self.client.get("/billing/").status_code,403)
+        self.assertEqual(self.client.post("/billing/plans/new/",{"name":"Unauthorized"}).status_code,403)
+        client=self.make_platform_admin()
+        name="Published SaaS "+uuid4().hex
+        data={"name":name,"price":"2999.00","period":"month","websites":"on","memberships":"on","attendance":"on","payments":"on","is_active":"on"}
+        self.assertEqual(client.post("/billing/plans/new/",data).status_code,302)
+        plan=SaaSPlan.objects.get(name=name)
+        data["price"]="-1"
+        self.assertEqual(client.post(f"/billing/plans/{plan.pk}/",data).status_code,200)
+        plan.refresh_from_db();self.assertEqual(plan.price,Decimal("2999.00"))
+        self.assertEqual(self.tenant_client().get("/billing/plans/").status_code,404)
+
+    def test_saas_assignment_snapshots_quote_and_issues_first_invoice_once(self):
+        plan=self.saas_plan()
+        subscription,invoice=self.saas_assignment(plan=plan,trial=14,grace=3)
+        self.assertEqual(invoice.period_start,timezone.localdate()+timedelta(days=14))
+        self.assertEqual(invoice.amount,plan.price)
+        self.assertEqual(access_for_gym(self.a).state,"Trial")
+        SaaSPlan.objects.filter(pk=plan.pk).update(price="4999.00",attendance=False)
+        invoice.refresh_from_db();subscription.refresh_from_db()
+        self.assertEqual(invoice.amount,Decimal("2999.00"));self.assertTrue(invoice.modules["attendance"])
+        self.assertEqual(subscription.price,Decimal("2999.00"))
+        with self.assertRaises(BillingError):
+            assign_saas_plan(self.a.pk,plan.pk,14,3,self.user.pk)
+        self.assertEqual(subscription.invoices.count(),1)
+
+    def test_saas_gym_onboarding_can_assign_plan_without_per_gym_scripts(self):
+        client=self.make_platform_admin();plan=self.saas_plan()
+        data={"name":"Onboard SaaS","slug":"saas-"+uuid4().hex,"primary_color":"#123456",
+              "saas_plan":str(plan.pk),"trial_days":"7","grace_days":"2",**self.owner_payload()}
+        self.assertEqual(client.post("/gyms/new/",data).status_code,302)
+        gym=Organization.objects.get(slug=data["slug"])
+        self.assertTrue(gym.database_ready)
+        self.assertEqual(GymSubscription.objects.get(organization=gym).trial_ends_on,timezone.localdate()+timedelta(days=7))
+        self.assertEqual(PlatformInvoice.objects.filter(subscription__organization=gym).count(),1)
+
+    def test_saas_verified_recording_uses_invoice_amount_and_creates_next_invoice(self):
+        subscription,invoice=self.saas_assignment()
+        self.assertFalse(access_for_gym(self.a).allowed)
+        client=self.make_platform_admin()
+        path=f"/billing/invoices/{invoice.pk}/payment/"
+        data={"reference":"TRANSFER-"+uuid4().hex,"method":"bank","note":"Matched bank receipt","amount":"0.01"}
+        self.assertEqual(client.post(path,data).status_code,302)
+        self.assertEqual(client.post(path,data).status_code,302)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status,"paid")
+        payment=PlatformPayment.objects.get(invoice=invoice)
+        self.assertEqual(payment.amount,Decimal("2999.00"))
+        self.assertEqual(subscription.invoices.filter(status="issued").count(),1)
+        next_invoice=subscription.invoices.get(status="issued")
+        self.assertEqual(next_invoice.period_start,invoice.period_end)
+        self.assertTrue(access_for_gym(self.a).allowed)
+        self.assertEqual(SubscriptionEvent.objects.filter(subscription=subscription,action="payment_recorded").count(),1)
+
+    def test_saas_reference_cannot_settle_two_invoices_even_with_changed_case(self):
+        subscription,first=self.saas_assignment()
+        reference="Transfer-"+uuid4().hex
+        self.settle_saas(first,reference)
+        second=subscription.invoices.get(status="issued")
+        with self.assertRaises(BillingError):
+            self.settle_saas(second,reference.upper())
+        second.refresh_from_db();self.assertEqual(second.status,"issued")
+        self.assertFalse(PlatformPayment.objects.filter(invoice=second).exists())
+        with self.assertRaises(BillingError):
+            self.settle_saas(first,"Different-"+uuid4().hex)
+
+    def test_saas_expiry_and_grace_are_enforced_by_exclusive_dates(self):
+        subscription,invoice=self.saas_assignment(grace=3)
+        self.settle_saas(invoice)
+        self.assertEqual(access_for_gym(self.a,today=invoice.period_end-timedelta(days=1)).state,"Active")
+        self.assertEqual(access_for_gym(self.a,today=invoice.period_end).state,"Grace period")
+        self.assertTrue(access_for_gym(self.a,today=invoice.period_end+timedelta(days=2)).allowed)
+        self.assertFalse(access_for_gym(self.a,today=invoice.period_end+timedelta(days=3)).allowed)
+        self.assertFalse(access_for_gym(self.a,today=invoice.period_end+timedelta(days=4)).allowed)
+
+    def test_saas_plan_change_preserves_paid_and_trial_entitlements_until_next_term(self):
+        original=self.saas_plan();replacement=self.saas_plan(price=Decimal("3999.00"),attendance=False)
+        subscription,invoice=self.saas_assignment(plan=original,trial=7)
+        self.settle_saas(invoice)
+        old_pending=subscription.invoices.get(status="issued")
+        next_invoice=change_saas_plan(subscription.pk,replacement.pk,self.user.pk,"Changed package")
+        self.assertEqual(change_saas_plan(subscription.pk,replacement.pk,self.user.pk,"Retried plan change").pk,next_invoice.pk)
+        old_pending.refresh_from_db();self.assertEqual(old_pending.status,"void")
+        self.assertTrue(access_for_gym(self.a).modules["attendance"])
+        self.settle_saas(next_invoice)
+        self.assertTrue(access_for_gym(self.a,today=invoice.period_start).modules["attendance"])
+        self.assertFalse(access_for_gym(self.a,today=invoice.period_end).modules["attendance"])
+        self.assertEqual(next_invoice.amount,Decimal("3999.00"))
+        self.assertEqual(subscription.invoices.filter(status="issued").count(),1)
+
+    def test_saas_future_payment_does_not_unlock_current_uncovered_days(self):
+        subscription,invoice=self.saas_assignment()
+        invoice.period_start+=timedelta(days=1);invoice.save(update_fields=["period_start"])
+        self.settle_saas(invoice)
+        self.assertFalse(access_for_gym(self.a).allowed)
+        self.assertTrue(access_for_gym(self.a,today=invoice.period_start).allowed)
+
+    def test_saas_payment_does_not_remove_explicit_suspension_and_resume_checks_coverage(self):
+        subscription,invoice=self.saas_assignment()
+        change_saas_state(subscription.pk,"suspend",self.user.pk,"Operator suspension")
+        self.settle_saas(invoice)
+        self.assertEqual(access_for_gym(self.a).state,"Suspended")
+        change_saas_state(subscription.pk,"resume",self.user.pk,"Issue resolved")
+        self.assertTrue(access_for_gym(self.a).allowed)
+        self.assertFalse(access_for_gym(self.a,today=invoice.period_end).allowed)
+
+    def test_saas_cancellation_preserves_paid_history_and_gym_database(self):
+        member,term,code=self.active_card()
+        subscription,invoice=self.saas_assignment();self.settle_saas(invoice)
+        unpaid=subscription.invoices.get(status="issued")
+        change_saas_state(subscription.pk,"cancel",self.user.pk,"Agreement ended")
+        unpaid.refresh_from_db();invoice.refresh_from_db()
+        self.assertEqual(unpaid.status,"void");self.assertEqual(invoice.status,"paid")
+        self.assertEqual(access_for_gym(self.a).state,"Cancelled")
+        self.assertTrue(MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).exists())
+        with self.assertRaises(BillingError):self.settle_saas(unpaid)
+        with self.assertRaises(BillingError):change_saas_state(subscription.pk,"resume",self.user.pk,"Cannot resume cancellation")
+
+    def test_saas_expired_operations_block_before_tenant_queries_but_public_read_stays_live(self):
+        member,term,code=self.active_card()
+        subscription,invoice=self.saas_assignment()
+        client=self.tenant_client()
+        with patch("websites.branding.website_for_request",side_effect=AssertionError("Tenant query after gate")), patch(
+                "gym_core.attendance.views.record_scan",side_effect=AssertionError("Attendance bypass")):
+            response=client.post("/desk/",self.scan_data(code))
+            self.assertEqual(response.status_code,503)
+            self.assertContainsText(response,"Open platform billing",status=503)
+        self.assertFalse(AttendanceVisit.objects.using(self.alias_a).exists())
+        self.assertEqual(client.get("/manage/").status_code,503)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/").status_code,200)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).post("/join/",{}).status_code,503)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).post("/contact/",{}).status_code,503)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/accounts/login/").status_code,200)
+        self.assertEqual(client.get("/billing/").status_code,200)
+        self.settle_saas(invoice)
+        self.assertEqual(client.get("/desk/").status_code,200)
+
+    def test_saas_module_entitlements_block_server_side_requests(self):
+        member,term,code=self.active_card()
+        plan=self.saas_plan(attendance=False,payments=False,memberships=False,websites=True)
+        subscription,invoice=self.saas_assignment(plan=plan,trial=14)
+        client=self.tenant_client()
+        self.assertEqual(client.post("/desk/",self.scan_data(code)).status_code,503)
+        self.assertEqual(client.get("/manage/members/").status_code,503)
+        self.assertEqual(client.get("/manage/payments/").status_code,503)
+        self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).post("/join/",{}).status_code,503)
+        self.assertEqual(client.get("/manage/website/").status_code,200)
+        self.assertEqual(client.get("/manage/").status_code,200)
+        self.assertEqual(client.get("/billing/").status_code,200)
+
+    def test_saas_existing_copay_callbacks_reconcile_without_paying_platform_invoice(self):
+        member,term,order,config=self.copay_order()
+        PaymentOrder.objects.using(self.alias_a).filter(pk=order.pk).update(status="submitting")
+        subscription,invoice=self.saas_assignment()
+        with patch("payments.services.config_for_gym",return_value=config),patch.object(CopayGateway,"requery",return_value=self.copay_result(order)):
+            response=Client(HTTP_HOST=self.domain_a.hostname).post("/payments/copay/notify/",self.copay_callback(order,config),content_type="application/json")
+        self.assertEqual(response.content,b"success")
+        invoice.refresh_from_db();self.assertEqual(invoice.status,"issued")
+        self.assertFalse(PlatformPayment.objects.filter(invoice=invoice).exists())
+        order.refresh_from_db(using=self.alias_a);self.assertEqual(order.status,"paid")
+        self.assertFalse(access_for_gym(self.a).allowed)
+
+    def test_saas_owner_billing_is_host_scoped_and_does_not_need_tenant_database(self):
+        subscription,invoice=self.saas_assignment()
+        other_subscription,other_invoice=self.saas_assignment(gym=self.b)
+        Membership.objects.create(organization=self.b,user=self.user,role="owner")
+        Organization.objects.filter(pk=self.a.pk).update(database_ready=False)
+        client=self.tenant_client()
+        with patch("websites.branding.website_for_request",side_effect=AssertionError("Billing used tenant DB")):
+            self.assertEqual(client.get("/billing/").status_code,200)
+            self.assertEqual(client.get(f"/billing/invoices/{invoice.pk}/").status_code,200)
+            self.assertEqual(client.get(f"/billing/invoices/{other_invoice.pk}/").status_code,404)
+        self.assertEqual(client.post("/billing/",{}).status_code,405)
+        self.assertEqual(client.post(f"/billing/invoices/{invoice.pk}/payment/",{}).status_code,404)
+
+    def test_saas_staff_and_members_cannot_read_owner_billing_or_edit_platform(self):
+        subscription,invoice=self.saas_assignment(trial=14)
+        for role in ("staff","manager","member"):
+            account=self.desk_account(role)
+            client=Client(HTTP_HOST=self.domain_a.hostname);client.force_login(account)
+            self.assertEqual(client.get("/billing/").status_code,404)
+            self.assertEqual(client.get(f"/billing/invoices/{invoice.pk}/").status_code,404)
+            platform=Client(HTTP_HOST="localhost");platform.force_login(account)
+            self.assertEqual(platform.get("/billing/").status_code,403)
+
+    def test_saas_mutations_require_csrf_post_reference_and_reason(self):
+        subscription,invoice=self.saas_assignment()
+        self.make_platform_admin()
+        client=Client(HTTP_HOST="localhost",enforce_csrf_checks=True);client.force_login(self.user)
+        path=f"/billing/invoices/{invoice.pk}/payment/"
+        self.assertEqual(client.post(path,{"reference":"bad"}).status_code,403)
+        self.assertEqual(self.client.get(path).status_code,405)
+        self.client.post(path,{"reference":"MISSING-NOTE","method":"bank"})
+        self.assertFalse(PlatformPayment.objects.filter(invoice=invoice).exists())
+        self.client.post(f"/gyms/{self.a.slug}/subscription/state/",{"action":"suspend","note":""})
+        subscription.refresh_from_db();self.assertIsNone(subscription.suspended_at)
+
+    def test_saas_archive_does_not_reprice_or_cancel_existing_agreements(self):
+        plan=self.saas_plan();subscription,invoice=self.saas_assignment(plan=plan,trial=14)
+        SaaSPlan.objects.filter(pk=plan.pk).update(is_active=False,price="9999.00")
+        self.assertTrue(access_for_gym(self.a).allowed)
+        self.settle_saas(invoice)
+        next_invoice=subscription.invoices.get(status="issued")
+        self.assertEqual(next_invoice.amount,Decimal("2999.00"))
+        self.make_platform_admin()
+        response=self.client.post(f"/gyms/{self.b.slug}/subscription/",{"plan":str(plan.pk),"trial_days":"14","grace_days":"0"})
+        self.assertEqual(response.status_code,200)
+        self.assertFalse(GymSubscription.objects.filter(organization=self.b).exists())
+
+    def test_saas_tables_exist_only_in_platform_database(self):
+        central=connection.introspection.table_names()
+        for table in ("platform_core_saasplan","platform_core_gymsubscription","platform_core_platforminvoice","platform_core_platformpayment","platform_core_subscriptionevent"):
+            self.assertIn(table,central)
+            self.assertNotIn(table,connections[self.alias_a].introspection.table_names())
+            self.assertNotIn(table,connections[self.alias_b].introspection.table_names())
+
+    def test_saas_concurrent_confirmations_do_not_duplicate_payments_or_next_invoice(self):
+        subscription,invoice=self.saas_assignment()
+        reference="CONCURRENT-"+uuid4().hex
+        def pay(_):
+            try:return self.settle_saas(invoice,reference).pk
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results=list(executor.map(pay,range(2)))
+        self.assertEqual(results,[invoice.pk,invoice.pk])
+        self.assertEqual(PlatformPayment.objects.filter(invoice=invoice).count(),1)
+        self.assertEqual(subscription.invoices.filter(status="issued").count(),1)
+
+    def test_saas_zero_price_requires_explicit_complimentary_confirmation(self):
+        subscription,invoice=self.saas_assignment(plan=self.saas_plan(price=Decimal("0.00")))
+        with self.assertRaises(BillingError):record_saas_payment(invoice.pk,self.user.pk,"NO-CHARGE-"+uuid4().hex,"bank","Wrong method")
+        self.settle_saas(invoice)
+        self.assertTrue(access_for_gym(self.a).allowed)
+        self.assertEqual(PlatformPayment.objects.get(invoice=invoice).amount,Decimal("0.00"))
 
 
 

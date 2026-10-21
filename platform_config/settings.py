@@ -73,6 +73,7 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
+    'tenants.subscription_middleware.TenantSubscriptionMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
@@ -177,3 +178,5 @@ TENANT_APP_LABELS = {"tenant_data", "gym_core", "pos", "payments", "websites"}
 
 # Per-gym merchant credentials are read from an ignored operator-managed secret file.
 COPAY_CONFIG_FILE = os.environ.get("COPAY_CONFIG_FILE", "")
+
+PLATFORM_BILLING_INSTRUCTIONS = os.environ.get("PLATFORM_BILLING_INSTRUCTIONS", "Contact Powerhouse for your platform subscription payment instructions.")

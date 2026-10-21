@@ -2,10 +2,15 @@ from django import forms
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 from django.contrib.auth import get_user_model
 from django.conf import settings
+from platform_core.models import SaaSPlan
 from .models import GymDomain, Membership, Organization, normalize_hostname
 
 
 class GymForm(forms.ModelForm):
+    saas_plan = forms.ModelChoiceField(queryset=SaaSPlan.objects.filter(is_active=True), required=False,
+        label="Powerhouse subscription plan (optional)", help_text="Leave blank to keep billing unmanaged until a plan is assigned.")
+    trial_days = forms.IntegerField(min_value=0, max_value=90, initial=14, required=False)
+    grace_days = forms.IntegerField(min_value=0, max_value=30, initial=0, required=False)
     domain_hostname = forms.CharField(
         required=False, max_length=253, label="Custom domain (optional)",
         help_text="For a real gym domain, enter only its hostname. During local development a local portal is created automatically.",

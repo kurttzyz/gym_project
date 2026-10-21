@@ -8,8 +8,8 @@ database/login. No casino platform code, data, or payment credentials are shared
 platform_config/                 Django settings, platform URLs, ASGI/WSGI
 platform_core/                   Central platform control plane
   tenants/                       Registry/provisioning/domain boundary
-  subscription_plans/            Planned B2B SaaS plans and module entitlements
-  billing/                       Planned gym-to-Powerhouse subscriptions/invoices
+  subscription_plans/            SaaS plans and module snapshots in platform_core/models.py
+  billing/                       Gym-to-Powerhouse invoices, receipt recording and access controls
   platform_dashboard/            Platform administration boundary
   views.py                       Existing platform dashboard and onboarding
 accounts/                        Central identities/authentication (existing)
@@ -41,8 +41,9 @@ config/                          Router/admin infrastructure and compatibility i
 ```
 
 Domain folders marked Planned are architectural boundaries, not implemented
-business features. Platform SaaS billing, POS, and recurring payment collection
-remain planned. QR attendance, branch management, and limited front-desk staff
+business features. POS and automatic recurring payment collection remain planned.
+Platform SaaS plans, invoices, verified payment recording, and service/module access
+controls are implemented; see [platform billing](platform-billing.md). QR attendance, branch management, and limited front-desk staff
 permissions are implemented; see [attendance](attendance.md). Gym-priced plan publishing, membership requests, and private contact
 inboxes, member profiles, invitation enrollment, and manually managed membership
 terms are implemented. Manual activation requires an owner action and a reason;
@@ -56,7 +57,8 @@ Celery/Redis and notification/billing workers are also planned, not running.
 ## Database ownership
 
 Central `default` owns accounts, sessions, gym registration, custom domains,
-access memberships, and future platform_core business models. Tenant access
+access memberships, and platform_core SaaS plans, invoices, payment records,
+and subscription events. Tenant access
 memberships authorize users; they are not paid gym memberships.
 
 The router sends `tenant_data`, `gym_core`, `pos`, `payments`, and `websites` to

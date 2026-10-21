@@ -64,6 +64,12 @@ def add_gym(request):
             gym = form.save()
             owner = owner_form.save()
             Membership.objects.create(organization=gym, user=owner, role=Membership.Role.OWNER)
+            if form.cleaned_data["saas_plan"]:
+                from platform_core.billing.services import assign_plan
+                trial = form.cleaned_data["trial_days"]
+                grace = form.cleaned_data["grace_days"]
+                assign_plan(gym.pk, form.cleaned_data["saas_plan"].pk,
+                    14 if trial is None else trial, 0 if grace is None else grace, request.user.pk)
             if form.cleaned_data["domain_hostname"]:
                 GymDomain.objects.create(organization=gym, hostname=form.cleaned_data["domain_hostname"])
         try:

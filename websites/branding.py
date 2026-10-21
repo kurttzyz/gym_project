@@ -6,7 +6,7 @@ from .services import website_for_request
 def branding(request):
     gym = getattr(request, "tenant", None)
     site = None
-    if gym:
+    if gym and not getattr(request, "platform_billing_only", False):
         try:
             site = website_for_request(request)
         except GymDatabaseUnavailable:
