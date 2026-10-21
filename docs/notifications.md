@@ -90,3 +90,5 @@ Members manage email preferences at `/portal/notifications/`, linked from their 
 - Provider exception text is not stored or logged because it may contain credentials, email addresses, or private responses. History uses bounded outcome codes. Outbox text/HTML are tenant-private snapshots, with HTML escaping, and one recipient per email.
 
 No real SMTP messages are sent in integration tests. They use Django's in-memory mail backend and isolated tenant databases. SMS, marketing, bounce ingestion, per-gym SMTP credentials, retention/purge UI, and platform B2B billing emails are future extensions. Protect outbox data with the same backups and access controls as member records.
+
+Renewal submissions alert the owner inbox; review decisions use the optional **Membership updates** category. Member-requested password recovery uses a separate central security outbox, bypassing optional notification switches, and never exposes reset tokens in tenant history. It shares the configured SMTP transport and Celery scheduler. See [member-self-service.md](member-self-service.md).

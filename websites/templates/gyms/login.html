@@ -7,4 +7,4 @@
     value="{{ next }}"
   /><button>Sign in</button>
 </form>
-{% endblock %}
+{% if tenant %}<p><a href="{% url 'member-reset-request' %}">Forgot your member password?</a></p>{% endif %}{% endblock %}

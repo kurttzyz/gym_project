@@ -8,7 +8,7 @@ class NotificationSettingsForm(forms.ModelForm):
     class Meta:
         model = NotificationSettings
         fields = ['email_enabled','public_origin','owner_email','bookings','class_reminders',
-                  'membership_reminders','payment_confirmations','owner_alerts']
+                  'membership_updates','membership_reminders','payment_confirmations','owner_alerts']
         labels = {'bookings':'Class confirmations, waitlists and cancellations',
                   'class_reminders':'Upcoming class reminders', 'owner_alerts':'New applications and payment issue alerts'}
 

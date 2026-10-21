@@ -35,7 +35,7 @@ from datetime import date, timedelta
 import re
 from gym_core.members.models import MemberProfile, MemberInvitation
 from gym_core.memberships.models import MemberSubscription, MembershipEvent
-from gym_core.members.services import issue_invitation, end_of_term
+from gym_core.members.services import issue_invitation, end_of_term, assign_plan, EnrollmentError
 from gym_core.members.forms import waiver_version
 from payments.models import PaymentOrder
 from payments.services import create_order, start_checkout, reconcile, process_callback
@@ -59,6 +59,10 @@ from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
 
+from gym_core.self_service.models import RenewalRequest, MemberProfileChange
+from gym_core.self_service.services import request_renewal, review_renewal, cancel_renewal
+from accounts.models import PasswordRecovery, RecoveryThrottle
+from accounts.recovery import queue_recovery, deliver_recovery, token_generator
 from gym_core.notifications.models import NotificationSettings, EmailNotification, EmailAttempt
 from gym_core.notifications.services import queue_email as queue_notice
 from gym_core.notifications.delivery import deliver_batch as deliver_email_batch
@@ -987,7 +991,7 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
         with connections[self.alias_a].schema_editor() as editor:
-            for model in (EmailAttempt, EmailNotification, NotificationSettings, BookingEvent, ClassBooking, ClassSession, Trainer):
+            for model in (RenewalRequest, MemberProfileChange, EmailAttempt, EmailNotification, NotificationSettings, BookingEvent, ClassBooking, ClassSession, Trainer):
                 # Empty notification tables belong to a later schema than this fixture.
                 editor.delete_model(model)
             editor.delete_model(AttendanceScan)
@@ -1771,7 +1775,7 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         member,subscription,code=self.active_card()
         with connections[self.alias_a].schema_editor() as editor:
-            for model in (EmailAttempt, EmailNotification, NotificationSettings, BookingEvent, ClassBooking, ClassSession, Trainer):
+            for model in (RenewalRequest, MemberProfileChange, EmailAttempt, EmailNotification, NotificationSettings, BookingEvent, ClassBooking, ClassSession, Trainer):
                 # Empty notification tables belong to a later schema than this fixture.
                 editor.delete_model(model)
             editor.delete_model(AttendanceScan);editor.delete_model(AttendanceVisit)
@@ -1779,7 +1783,8 @@ class GymDatabaseTests(unittest.TestCase):
             editor.remove_field(MemberProfile,MemberProfile._meta.get_field("email_notifications"))
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core",name__in=["0004_memberprofile_qr_version_attendancevisit_and_more",
             "0005_trainer_classbooking_bookingevent_classsession_and_more",
-            "0006_memberprofile_email_notifications_emailnotification_and_more"]).delete()
+            "0006_memberprofile_email_notifications_emailnotification_and_more",
+            "0007_notificationsettings_membership_updates_and_more"]).delete()
         self.user.is_superuser=True;self.user.save()
         self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"),"Retry setup")
         self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/retry-setup/").status_code,302)
@@ -2580,10 +2585,11 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         member,term,code = self.active_card()
         with connections[self.alias_a].schema_editor() as editor:
-            for model in (EmailAttempt,EmailNotification,NotificationSettings,BookingEvent,ClassBooking,ClassSession,Trainer):editor.delete_model(model)
+            for model in (RenewalRequest,MemberProfileChange,EmailAttempt,EmailNotification,NotificationSettings,BookingEvent,ClassBooking,ClassSession,Trainer):editor.delete_model(model)
             editor.remove_field(MemberProfile,MemberProfile._meta.get_field("email_notifications"))
         MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__in=['0005_trainer_classbooking_bookingevent_classsession_and_more',
-            '0006_memberprofile_email_notifications_emailnotification_and_more']).delete()
+            '0006_memberprofile_email_notifications_emailnotification_and_more',
+            '0007_notificationsettings_membership_updates_and_more']).delete()
         self.make_platform_admin()
         self.assertContainsText(self.client.get(f'/gyms/{self.a.slug}/'),'Retry setup')
         self.assertEqual(self.client.post(f'/gyms/{self.a.slug}/retry-setup/').status_code,302)
@@ -2865,15 +2871,327 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         user,member,session = self.class_fixture()
         with connections[self.alias_a].schema_editor() as editor:
-            for model in (EmailAttempt,EmailNotification,NotificationSettings):editor.delete_model(model)
+            for model in (RenewalRequest,MemberProfileChange,EmailAttempt,EmailNotification,NotificationSettings):editor.delete_model(model)
             editor.remove_field(MemberProfile,MemberProfile._meta.get_field('email_notifications'))
-        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__startswith='0006_').delete()
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__in=['0006_memberprofile_email_notifications_emailnotification_and_more',
+            '0007_notificationsettings_membership_updates_and_more']).delete()
         self.make_platform_admin()
         self.assertContainsText(self.client.get(f'/gyms/{self.a.slug}/'),'Retry setup')
         self.assertEqual(self.client.post(f'/gyms/{self.a.slug}/retry-setup/').status_code,302)
         self.assertTrue(ClassSession.objects.using(self.alias_a).filter(pk=session.pk).exists())
         self.assertTrue(MemberProfile.objects.using(self.alias_a).get(pk=member.pk).email_notifications)
         self.assertFalse(EmailNotification.objects.using(self.alias_a).exists())
+
+
+    def member_client_for(self,user,domain=None,csrf=False):
+        client=Client(HTTP_HOST=(domain or self.domain_a).hostname,enforce_csrf_checks=csrf)
+        client.force_login(user)
+        return client
+
+    def renewal_fixture(self):
+        user,member,session=self.class_fixture()
+        plan=MembershipPlan.objects.using(self.alias_a).get()
+        term=MemberSubscription.objects.using(self.alias_a).get(member=member)
+        return user,member,plan,term.expires_on
+
+    def test_self_service_profile_updates_allowlist_and_audit(self):
+        user,member,session=self.class_fixture()
+        original_qr=member.qr_version
+        data={'full_name':'Taylor Updated','phone':'09129999999','date_of_birth':'2000-01-02',
+            'emergency_contact_name':'Alex','emergency_contact_phone':'09120000000',
+            'email':'attacker@example.com','is_active':'','user_id':self.user.pk,'qr_version':str(uuid4()),'waiver_text':'Forged'}
+        client=self.member_client_for(user)
+        self.assertEqual(client.post('/portal/profile/',data).status_code,302)
+        fresh=MemberProfile.objects.using(self.alias_a).get(pk=member.pk)
+        self.assertEqual(fresh.full_name,'Taylor Updated');self.assertEqual(fresh.email,member.email)
+        self.assertEqual(fresh.qr_version,original_qr);self.assertTrue(fresh.is_active)
+        self.assertEqual(fresh.user_id,user.pk);self.assertEqual(fresh.waiver_text,'')
+        audit=MemberProfileChange.objects.using(self.alias_a).get()
+        self.assertEqual(audit.actor_id,user.pk)
+        self.assertNotIn('email',audit.changes)
+        self.assertContainsText(self.tenant_client().get(f'/manage/members/{member.pk}/'),'Member profile updates')
+        self.assertEqual(client.post('/portal/profile/',data).status_code,302)
+        self.assertEqual(MemberProfileChange.objects.using(self.alias_a).count(),1)
+
+    def test_self_service_profile_validation_and_csrf(self):
+        user,member,session=self.class_fixture()
+        client=self.member_client_for(user)
+        data={'full_name':'Test','phone':'0','date_of_birth':str(timezone.localdate()+timedelta(days=1)),
+              'emergency_contact_name':'Incomplete','emergency_contact_phone':''}
+        self.assertContainsText(client.post('/portal/profile/',data),'Birth date cannot be in the future')
+        self.assertFalse(MemberProfileChange.objects.using(self.alias_a).exists())
+        self.assertEqual(self.member_client_for(user,csrf=True).post('/portal/profile/',data).status_code,403)
+
+    def test_self_service_renewal_approval_preserves_quote_and_stays_pending(self):
+        user,member,plan,start=self.renewal_fixture()
+        client=self.member_client_for(user)
+        data={'plan':str(plan.pk),'starts_on':str(start),'note':'Please renew','price':'0','status':'active'}
+        self.assertEqual(client.post('/portal/renewals/',data).status_code,302)
+        row=RenewalRequest.objects.using(self.alias_a).get()
+        self.assertEqual(row.price,plan.price)
+        MembershipPlan.objects.using(self.alias_a).filter(pk=plan.pk).update(price=900,name='Changed catalog')
+        response=self.tenant_client().post(f'/manage/renewals/{row.pk}/review/',{
+            f'{row.pk}-action':'approve',f'{row.pk}-note':'Original quote accepted'})
+        self.assertEqual(response.status_code,302)
+        row=RenewalRequest.objects.using(self.alias_a).select_related('subscription').get()
+        self.assertEqual(row.status,'approved');self.assertEqual(row.subscription.status,'pending')
+        self.assertEqual(row.subscription.price,plan.price);self.assertEqual(row.subscription.plan_name,plan.name)
+        self.assertFalse(PaymentOrder.objects.using(self.alias_a).exists())
+        self.assertContainsText(client.get('/portal/renewals/'),'Original quote accepted')
+        with gym_database(self.alias_a):
+            again=review_renewal(self.alias_a,row.pk,'approve','Retry',self.user.pk)
+        self.assertEqual(again.subscription_id,row.subscription_id)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).count(),2)
+
+    def test_self_service_duplicate_renewal_and_single_pending_request(self):
+        user,member,plan,start=self.renewal_fixture()
+        first=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'Please')
+        second=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'Repeated')
+        self.assertEqual(first.pk,second.pk)
+        with self.assertRaises(EnrollmentError):request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start+timedelta(days=1),'Different')
+        self.assertEqual(RenewalRequest.objects.using(self.alias_a).count(),1)
+
+    def test_self_service_renewal_conflict_dates_and_frozen_term(self):
+        user,member,plan,start=self.renewal_fixture()
+        for invalid in [timezone.localdate()-timedelta(days=1),timezone.localdate(),timezone.localdate()+timedelta(days=366)]:
+            with self.assertRaises(EnrollmentError):request_renewal(self.alias_a,member.pk,user.pk,plan.pk,invalid,'')
+        MemberSubscription.objects.using(self.alias_a).filter(member=member).update(status='frozen')
+        with self.assertRaises(EnrollmentError):request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'')
+        self.assertFalse(RenewalRequest.objects.using(self.alias_a).exists())
+
+    def test_self_service_approval_rechecks_new_pending_terms(self):
+        user,member,plan,start=self.renewal_fixture()
+        row=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'')
+        with gym_database(self.alias_a):assign_plan(self.alias_a,member.pk,plan.pk,start,self.user.pk)
+        with self.assertRaises(EnrollmentError):review_renewal(self.alias_a,row.pk,'approve','Review',self.user.pk)
+        row.refresh_from_db(using=self.alias_a);self.assertEqual(row.status,'pending')
+
+    def test_self_service_cancel_and_decline_never_create_terms(self):
+        user,member,plan,start=self.renewal_fixture()
+        row=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'')
+        client=self.member_client_for(user)
+        self.assertEqual(client.get(f'/portal/renewals/{row.pk}/cancel/').status_code,405)
+        self.assertEqual(client.post(f'/portal/renewals/{row.pk}/cancel/').status_code,302)
+        self.assertEqual(client.post(f'/portal/renewals/{row.pk}/cancel/').status_code,302)
+        row2=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'New')
+        review_renewal(self.alias_a,row2.pk,'decline','Contact the desk',self.user.pk)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).count(),1)
+
+    def test_self_service_concurrent_renewal_submission_creates_one_request(self):
+        user,member,plan,start=self.renewal_fixture()
+        def submit(_):
+            try:return request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'Same').pk
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as pool:ids=list(pool.map(submit,range(2)))
+        self.assertEqual(ids[0],ids[1]);self.assertEqual(RenewalRequest.objects.using(self.alias_a).count(),1)
+
+    def test_self_service_concurrent_approvals_create_one_pending_term(self):
+        user,member,plan,start=self.renewal_fixture()
+        row=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'')
+        def approve(_):
+            try:return review_renewal(self.alias_a,row.pk,'approve','Accepted',self.user.pk).subscription_id
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as pool:ids=list(pool.map(approve,range(2)))
+        self.assertEqual(ids[0],ids[1]);self.assertEqual(MemberSubscription.objects.using(self.alias_a).filter(status='pending').count(),1)
+
+    def test_self_service_permissions_member_ownership_and_tenant_isolation(self):
+        user,member,plan,start=self.renewal_fixture()
+        other,other_member=self.another_class_member()
+        row=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'Private renewal')
+        client=self.member_client_for(other)
+        self.assertNotIn(b'Private renewal',client.get('/portal/renewals/').content)
+        self.assertEqual(client.post(f'/portal/renewals/{row.pk}/cancel/').status_code,404)
+        self.assertEqual(client.get('/manage/renewals/').status_code,404)
+        self.assertEqual(self.tenant_client(self.domain_b).get('/manage/renewals/').status_code,404)
+        Membership.objects.create(user=user,organization=self.b,role='member')
+        MemberProfile.objects.using(self.alias_b).create(user_id=user.pk,full_name='Gym B profile',email='b@example.com',phone='0')
+        self.assertNotIn(b'Private renewal',self.member_client_for(user,self.domain_b).get('/portal/renewals/').content)
+
+    def test_self_service_renewal_notification_and_profile_password_change(self):
+        user,member,plan,start=self.renewal_fixture();self.enable_notifications()
+        row=request_renewal(self.alias_a,member.pk,user.pk,plan.pk,start,'')
+        review_renewal(self.alias_a,row.pk,'approve','Pay at the desk',self.user.pk)
+        self.assertTrue(EmailNotification.objects.using(self.alias_a).filter(category='membership_updates',member=member).exists())
+        client=self.member_client_for(user)
+        self.assertEqual(client.post('/portal/password/',{'old_password':'Wrong','new_password1':'Member-New-Password-92!','new_password2':'Member-New-Password-92!'}).status_code,200)
+        self.assertEqual(client.post('/portal/password/',{'old_password':'Desk-Strong-84!','new_password1':'Member-New-Password-92!','new_password2':'Member-New-Password-92!'}).status_code,302)
+        user.refresh_from_db();self.assertTrue(user.check_password('Member-New-Password-92!'))
+        self.assertEqual(client.get('/portal/profile/').status_code,200)
+
+    def test_self_service_payment_history_is_own_member_only(self):
+        user,member,plan,start=self.renewal_fixture()
+        _,other=self.another_class_member()
+        term=MemberSubscription.objects.using(self.alias_a).get(member=other)
+        with gym_database(self.alias_a):
+            PaymentOrder.objects.create(subscription=term,merchant_reference='PRIVATE'+uuid4().hex,merchant_code='m',environment='sandbox',payment_method='T',amount=999)
+        self.assertContainsText(self.member_client_for(user).get('/portal/payments/'),'No membership payment records yet')
+        self.assertEqual(self.tenant_client().get('/portal/payments/').status_code,404)
+
+    def recovery_fixture(self):
+        user,member,session=self.class_fixture()
+        user.email='identity-'+uuid4().hex+'@example.com';user.save(update_fields=['email'])
+        origin='https://'+self.domain_a.hostname
+        return user,member,origin
+
+    def test_self_service_recovery_generic_response_and_no_smtp_or_tenant_token(self):
+        user,member,origin=self.recovery_fixture()
+        client=Client(HTTP_HOST=self.domain_a.hostname)
+        with patch('django.core.mail.EmailMultiAlternatives.send') as send:
+            response=client.post('/accounts/password-reset/',{'username':user.username,'email':user.email})
+            unknown=client.post('/accounts/password-reset/',{'username':'not-an-account','email':'unknown@example.com'})
+        self.assertEqual(response.status_code,302);self.assertEqual(response['Location'],unknown['Location'])
+        send.assert_not_called()
+        row=PasswordRecovery.objects.get(user=user)
+        self.assertEqual(row.recipient,user.email);self.assertNotEqual(row.recipient,member.email)
+        self.assertFalse(EmailNotification.objects.using(self.alias_a).exists())
+        self.assertNotIn('token',[field.name for field in PasswordRecovery._meta.fields])
+        production_domain=GymDomain.objects.create(organization=self.a,hostname='recover-'+uuid4().hex+'.example.com',verified_at=timezone.now())
+        PasswordRecovery.objects.filter(user=user).delete()
+        with override_settings(DEBUG=False):
+            production=Client(HTTP_HOST=production_domain.hostname)
+            self.assertEqual(production.post('/accounts/password-reset/',{'username':user.username,'email':user.email}).status_code,302)
+        self.assertEqual(PasswordRecovery.objects.get(user=user).origin,'https://'+production_domain.hostname)
+
+    def test_self_service_recovery_uses_identity_email_not_gym_contact_email(self):
+        user,member,origin=self.recovery_fixture()
+        MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).update(email='gym-owner-changed@example.com')
+        queue_recovery(self.a,self.alias_a,user.username,'gym-owner-changed@example.com',origin,'127.0.0.1')
+        self.assertFalse(PasswordRecovery.objects.filter(user=user).exists())
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        self.assertEqual(PasswordRecovery.objects.get(user=user).recipient,user.email)
+
+    def test_self_service_recovery_sends_central_email_and_link_hidden_from_owner(self):
+        from django.core import mail
+        user,member,origin=self.recovery_fixture();self.enable_notifications()
+        MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).update(email_notifications=False)
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        row=PasswordRecovery.objects.get(user=user)
+        with self.mail_transport():deliver_recovery(row.pk)
+        self.assertEqual(len(mail.outbox),1);self.assertEqual(mail.outbox[0].to,[user.email])
+        self.assertIn(f'/accounts/reset/{row.pk}/',mail.outbox[0].body)
+        self.assertFalse(EmailNotification.objects.using(self.alias_a).exists())
+        self.assertNotIn(str(row.pk).encode(),self.tenant_client().get('/manage/notifications/').content)
+
+    def test_self_service_recovery_token_single_use_and_wrong_gym_rejected(self):
+        user,member,origin=self.recovery_fixture()
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        row=PasswordRecovery.objects.get(user=user);token=token_generator(self.a).make_token(user)
+        path=f'/accounts/reset/{row.pk}/{token}/'
+        wrong=Client(HTTP_HOST=self.domain_b.hostname)
+        self.assertEqual(wrong.get(path).status_code,404)
+        client=Client(HTTP_HOST=self.domain_a.hostname)
+        response=client.get(path)
+        self.assertEqual(response.status_code,302);self.assertIn('set-password',response['Location'])
+        clean_url=response['Location']
+        self.assertContainsText(client.get(clean_url),'Choose a new password')
+        self.assertEqual(client.get(clean_url)['Referrer-Policy'],'no-referrer')
+        data={'new_password1':'Recovered-Member-Password-93!','new_password2':'Recovered-Member-Password-93!'}
+        self.assertEqual(client.post(clean_url,data).status_code,302)
+        user.refresh_from_db();self.assertTrue(user.check_password(data['new_password1']))
+        row.refresh_from_db();self.assertEqual(row.status,'used')
+        self.assertContainsText(client.get(clean_url),'unavailable or expired')
+        self.assertContainsText(client.get(path),'unavailable or expired')
+
+    def test_self_service_recovery_expiry_and_password_changes_invalidate_link(self):
+        user,member,origin=self.recovery_fixture()
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        row=PasswordRecovery.objects.get(user=user);token=token_generator(self.a).make_token(user)
+        PasswordRecovery.objects.filter(pk=row.pk).update(expires_at=timezone.now()-timedelta(seconds=1))
+        client=Client(HTTP_HOST=self.domain_a.hostname)
+        self.assertContainsText(client.get(f'/accounts/reset/{row.pk}/{token}/'),'unavailable or expired')
+        PasswordRecovery.objects.filter(pk=row.pk).update(expires_at=timezone.now()+timedelta(minutes=30))
+        user.set_password('Changed-Elsewhere-Password-94!');user.save(update_fields=['password'])
+        self.assertContainsText(client.get(f'/accounts/reset/{row.pk}/{token}/'),'unavailable or expired')
+
+    def test_self_service_recovery_staff_owner_disabled_and_foreign_accounts_denied(self):
+        user,member,origin=self.recovery_fixture()
+        for field,value in [('is_staff',True),('is_superuser',True),('is_active',False)]:
+            get_user_model().objects.filter(pk=user.pk).update(**{field:value})
+            queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+            get_user_model().objects.filter(pk=user.pk).update(**{field:False if field!='is_active' else True})
+        Membership.objects.filter(user=user,organization=self.a).update(is_active=False)
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        self.assertFalse(PasswordRecovery.objects.filter(user=user).exists())
+        Membership.objects.filter(user=user,organization=self.a).update(is_active=True)
+        queue_recovery(self.b,self.alias_b,user.username,user.email,'https://'+self.domain_b.hostname,'127.0.0.1')
+        self.assertFalse(PasswordRecovery.objects.filter(user=user).exists())
+
+    def test_self_service_recovery_throttles_without_exposing_account(self):
+        user,member,origin=self.recovery_fixture()
+        for _ in range(3):queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        self.assertEqual(PasswordRecovery.objects.filter(user=user).count(),1)
+        for _ in range(12):queue_recovery(self.a,self.alias_a,'unknown','unknown@example.com',origin,'192.0.2.4')
+        self.assertLessEqual(RecoveryThrottle.objects.aggregate(value=django.db.models.Max('count'))['value'],10)
+        self.assertNotIn('192.0.2.4',str(list(RecoveryThrottle.objects.values_list('bucket',flat=True))))
+
+    def test_self_service_saas_blocks_renewals_but_allows_account_recovery(self):
+        user,member,plan,start=self.renewal_fixture()
+        subscription,invoice=self.saas_assignment(trial=14)
+        change_saas_state(subscription.pk,'suspend',self.user.pk,'Pause')
+        client=self.member_client_for(user)
+        self.assertEqual(client.get('/portal/renewals/').status_code,503)
+        self.assertEqual(client.get('/portal/profile/').status_code,200)
+        self.assertEqual(client.get('/portal/password/').status_code,200)
+        self.assertEqual(client.get('/accounts/password-reset/').status_code,200)
+
+    def test_self_service_upgrade_preserves_class_and_member_records(self):
+        from django.db.migrations.recorder import MigrationRecorder
+        user,member,session=self.class_fixture()
+        NotificationSettings.objects.using(self.alias_a).create(pk=1)
+        with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(RenewalRequest);editor.delete_model(MemberProfileChange)
+            editor.remove_field(NotificationSettings,NotificationSettings._meta.get_field('membership_updates'))
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__startswith='0007_').delete()
+        self.make_platform_admin()
+        self.assertContainsText(self.client.get(f'/gyms/{self.a.slug}/'),'Retry setup')
+        self.assertEqual(self.client.post(f'/gyms/{self.a.slug}/retry-setup/').status_code,302)
+        self.assertTrue(ClassSession.objects.using(self.alias_a).filter(pk=session.pk).exists())
+        self.assertTrue(MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).exists())
+        self.assertEqual(RenewalRequest.objects.using(self.alias_a).count(),0)
+
+
+    def test_self_service_concurrent_password_resets_consume_once(self):
+        user,member,origin=self.recovery_fixture()
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        row=PasswordRecovery.objects.get(user=user);token=token_generator(self.a).make_token(user)
+        clients=[Client(HTTP_HOST=self.domain_a.hostname) for _ in range(2)]
+        urls=[client.get(f'/accounts/reset/{row.pk}/{token}/')['Location'] for client in clients]
+        def reset(index):
+            password=f'Concurrent-Reset-Password-{index}-92!'
+            try:return clients[index].post(urls[index],{'new_password1':password,'new_password2':password}).status_code
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(reset,range(2)))
+        self.assertCountEqual(results,[302,200])
+        row.refresh_from_db();self.assertEqual(row.status,'used')
+
+    def test_self_service_recovery_transport_disabled_and_safe_retry(self):
+        user,member,origin=self.recovery_fixture()
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        row=PasswordRecovery.objects.get(user=user)
+        with override_settings(NOTIFICATION_DELIVERY_ENABLED=False):deliver_recovery(row.pk)
+        row.refresh_from_db();self.assertEqual(row.attempts,0)
+        with self.mail_transport(),patch('django.core.mail.EmailMultiAlternatives.send',side_effect=RuntimeError('smtp-secret-private')):
+            deliver_recovery(row.pk)
+        row.refresh_from_db();self.assertEqual(row.status,'queued');self.assertEqual(row.outcome,'transport_error')
+        self.assertGreater(row.available_at,timezone.now())
+        PasswordRecovery.objects.filter(pk=row.pk).update(available_at=timezone.now())
+        with self.mail_transport():deliver_recovery(row.pk)
+        row.refresh_from_db();self.assertEqual(row.status,'sent');self.assertEqual(row.attempts,2)
+
+    def test_self_service_scheduler_dispatches_only_recovery_ids_and_expires_old_requests(self):
+        from gym_core.notifications.tasks import sweep_notifications
+        user,member,origin=self.recovery_fixture()
+        queue_recovery(self.a,self.alias_a,user.username,user.email,origin,'127.0.0.1')
+        row=PasswordRecovery.objects.get(user=user)
+        with patch('gym_core.notifications.tasks.process_password_recovery.delay') as dispatch,patch('gym_core.notifications.tasks.process_gym_notifications.delay'):
+            sweep_notifications.run()
+        self.assertIn(str(row.pk),[call.args[0] for call in dispatch.call_args_list])
+        self.assertTrue(all(len(call.args)==1 for call in dispatch.call_args_list))
+        PasswordRecovery.objects.filter(pk=row.pk).update(expires_at=timezone.now()-timedelta(seconds=1))
+        with patch('gym_core.notifications.tasks.process_password_recovery.delay') as dispatch,patch('gym_core.notifications.tasks.process_gym_notifications.delay'):
+            sweep_notifications.run()
+        self.assertNotIn(str(row.pk),[call.args[0] for call in dispatch.call_args_list])
+        row.refresh_from_db();self.assertEqual(row.status,'expired')
 
 
 if __name__ == "__main__":

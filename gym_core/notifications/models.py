@@ -8,6 +8,7 @@ class NotificationSettings(models.Model):
     public_origin = models.URLField(blank=True, help_text='Your verified gym website origin, for example https://gym.example.com.')
     owner_email = models.EmailField(blank=True, help_text='Inbox for gym owner alerts. Leave empty to disable owner alerts.')
     bookings = models.BooleanField(default=True)
+    membership_updates = models.BooleanField(default=True)
     membership_reminders = models.BooleanField(default=True)
     payment_confirmations = models.BooleanField(default=True)
     owner_alerts = models.BooleanField(default=True)

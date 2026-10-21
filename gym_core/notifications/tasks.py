@@ -1,6 +1,8 @@
 import logging
 from celery import shared_task
 from django.db import connections
+from django.db.models import Q
+from accounts.models import PasswordRecovery, RecoveryThrottle
 from django.utils import timezone
 from gyms.models import Organization
 from gyms.databases import ready_database
@@ -16,6 +18,13 @@ logger = logging.getLogger(__name__)
 def sweep_notifications():
     # Only registered gym UUIDs travel through the broker, never DB aliases,
     # addresses, message bodies, or connection credentials.
+    now=timezone.now()
+    RecoveryThrottle.objects.filter(expires_at__lt=now).delete()
+    PasswordRecovery.objects.filter(expires_at__lte=now,status__in=['queued','sending','sent']).update(status='expired')
+    PasswordRecovery.objects.filter(created_at__lt=now-timezone.timedelta(days=30)).delete()
+    recoveries=PasswordRecovery.objects.filter(Q(status='queued',available_at__lte=now)|Q(status='sending',lease_until__lte=now))
+    for request_id in recoveries.values_list('pk',flat=True)[:500]:
+        process_password_recovery.delay(str(request_id))
     for key in Organization.objects.filter(database_ready=True).values_list('database_key',flat=True).iterator(chunk_size=100):
         process_gym_notifications.delay(str(key))
 
@@ -40,3 +49,14 @@ def process_gym_notifications(database_key):
     finally:
         if alias:
             connections[alias].close()
+
+
+@shared_task(ignore_result=True)
+def process_password_recovery(request_id):
+    from accounts.recovery import deliver_recovery
+    try:
+        deliver_recovery(request_id)
+    except Exception:
+        logger.warning('Account recovery delivery unavailable.')
+    finally:
+        connections.close_all()

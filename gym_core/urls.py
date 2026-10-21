@@ -13,8 +13,21 @@ from pos import views as pos_views
 
 from .classes import views as class_views
 from .notifications import views as notification_views
+from .self_service import views as self_service_views
+from accounts import recovery_views
 
 urlpatterns = [
+    path("portal/profile/", self_service_views.profile, name="member-profile"),
+    path("portal/renewals/", self_service_views.renewals, name="member-renewals"),
+    path("portal/renewals/<uuid:request_id>/cancel/", self_service_views.withdraw_renewal, name="member-renewal-cancel"),
+    path("portal/payments/", self_service_views.payment_history, name="member-payments"),
+    path("portal/password/", self_service_views.password_change, name="member-password-change"),
+    path("manage/renewals/", self_service_views.owner_renewals, name="owner-renewals"),
+    path("manage/renewals/<uuid:request_id>/review/", self_service_views.review, name="renewal-review"),
+    path("accounts/password-reset/", recovery_views.request_reset, name="member-reset-request"),
+    path("accounts/password-reset/requested/", recovery_views.requested, name="member-reset-requested"),
+    path("accounts/reset/<uuid:recovery_id>/<str:token>/", recovery_views.confirm_reset, name="member-reset-confirm"),
+    path("accounts/password-reset/complete/", recovery_views.complete, name="member-reset-complete"),
     path("manage/notifications/", notification_views.settings_page, name="owner-notifications"),
     path("manage/notifications/test/", notification_views.test_email, name="notification-test"),
     path("manage/notifications/<uuid:notification_id>/", notification_views.detail, name="notification-detail"),

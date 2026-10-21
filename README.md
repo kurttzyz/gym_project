@@ -236,3 +236,7 @@ Gym owners can add trainers at `/manage/trainers/` and publish sessions at `/man
 ### Automated email notifications
 
 Owners configure branded email and review delivery history at `/manage/notifications/`; members control their preferences at `/portal/notifications/`. Class events, verified production member payments, new applications, expiry reminders, and upcoming class reminders use a durable per-gym outbox. SMTP delivery is disabled by default. Configure SMTP once, then keep Redis, Celery worker, and Celery beat services running. See [notification setup and operating guide](docs/notifications.md), including native Windows/PostgreSQL and Docker instructions.
+
+### Member self-service
+
+Members can edit their own contact/emergency information at `/portal/profile/`, request a renewal at `/portal/renewals/`, view `/portal/payments/`, and change their shared login password at `/portal/password/`. Owners review `/manage/renewals/`; approval creates a pending term without charging or activating access. Member login recovery is available from the sign-in page, using central account email with single-use gym-bound links kept outside tenant-owner history. See [member self-service and release setup](docs/member-self-service.md).
