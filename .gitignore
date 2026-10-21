@@ -13,3 +13,29 @@ copay.secrets.json
 secrets/
 *.pem
 *.key
+
+
+# Python virtual environment
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Django generated files
+staticfiles/
+media/
+*.sqlite3
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
