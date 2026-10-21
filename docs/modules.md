@@ -17,8 +17,8 @@ gyms/                            Central registry, domain/access models (existin
 gym_core/                        Tenant operational application
   members/                       Profiles, emergency contacts, single-use account invitations
   memberships/                   Plans, applications, enrollment, dated terms and lifecycle audit
-  attendance/                    Planned check-ins and QR attendance
-  staff/                         Planned employee roles and permissions
+  attendance/                    QR cards, supervised check-in/out, visits and scan audit
+  staff/                         Staff/manager front-desk access; owner account UI in attendance/
   trainers/                      Planned trainers
   urls.py, views.py              Existing gym member portal and owner dashboard
 tenant_data/                     Existing tenant branch model and migrations
@@ -41,8 +41,9 @@ config/                          Router/admin infrastructure and compatibility i
 ```
 
 Domain folders marked Planned are architectural boundaries, not implemented
-business features. Platform SaaS billing, POS, recurring payment collection, and attendance
-remain planned. Gym-priced plan publishing, membership requests, and private contact
+business features. Platform SaaS billing, POS, and recurring payment collection
+remain planned. QR attendance, branch management, and limited front-desk staff
+permissions are implemented; see [attendance](attendance.md). Gym-priced plan publishing, membership requests, and private contact
 inboxes, member profiles, invitation enrollment, and manually managed membership
 terms are implemented. Manual activation requires an owner action and a reason;
 it does not collect or verify payment. COPAY orders provide a separate verified
@@ -98,7 +99,9 @@ explicit commercial agreement; no split payments are assumed.
 Current platform URLs belong to `platform_core` and require a platform superuser.
 Current gym portal URLs belong to `gym_core` and require an active gym membership.
 `websites` owns shared presentation and per-gym branding. Public websites, member portals, and owner website customization are implemented.
-Staff POS and further gym-owner business management remain planned. These should share tenant-local records and services, not
+Staff POS and further gym-owner business management remain planned.
+Staff/manager roles currently grant front-desk attendance access; owner-only
+member, payment, branding, branch, and employee management stays restricted. These should share tenant-local records and services, not
 separate code copies. Owner/manager/staff/member role names already exist, but
 business module permissions must be explicitly implemented before enabling writes.
 

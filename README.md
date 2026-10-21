@@ -66,8 +66,8 @@ are separate from tenant membership terms and payment records.
 
 Owner website editing is available at `/manage/website/` and the owner dashboard
 at `/manage/` on each gym domain. Member portals are at `/portal/`. Self-service
-signup, branch editing, attendance, and POS transactions
-are not implemented yet. COPAY one-time membership payments are implemented and
+signup and POS transactions are not implemented yet. Branch management and
+supervised QR check-in/attendance are implemented. COPAY one-time membership payments are implemented and
 remain disabled until each gym has its own merchant configuration. Owners can enroll approved applications or walk-in members,
 assign/renew dated terms, manually activate/freeze/resume/cancel access, and issue
 single-use member account invitations. Approval alone does not activate membership,
@@ -139,7 +139,7 @@ tenant-owned models belong in `tenant_data`; avoid cross-database foreign keys.
 .venv/bin/python manage.py test
 ```
 
-The Django runner executes a subprocess integration suite containing 96 checks
+The Django runner executes a subprocess integration suite containing 117 checks
 and two direct database-routing boundary tests, plus seven COPAY protocol tests.
 It creates uniquely named test databases/roles, tests legacy data migration,
 provisioning/retries, missing database handling, authentication, application isolation,
@@ -200,3 +200,11 @@ gym's own merchant configuration/key files, and set `COPAY_CONFIG_FILE` in `.env
 See [COPAY configuration, onboarding, and verification](docs/copay.md) for the
 complete setup and callback URLs. No real provider transaction has been tested
 without merchant credentials. Recurring charges and platform SaaS billing remain planned.
+
+## Front desk and QR attendance
+
+Owners manage branches at `/manage/branches/` and front-desk accounts at
+`/manage/staff/`. Staff/managers sign in on their own gym domain and use `/desk/`
+to scan/check member access. Owners and members can view/print revocable QR cards;
+visits, checkouts, and scan results remain isolated in the gym database. See the
+[attendance setup, permissions, and device guide](docs/attendance.md).

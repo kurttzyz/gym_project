@@ -13,4 +13,8 @@ class GymLoginView(LoginView):
             organization=self.request.tenant, user=self.request.user,
             role=Membership.Role.OWNER, is_active=True,
         ).exists()
-        return reverse("owner-dashboard" if owner else "dashboard")
+        if owner:
+            return reverse("owner-dashboard")
+        front_desk = Membership.objects.filter(organization=self.request.tenant, user=self.request.user,
+            role__in={"manager", "staff"}, is_active=True).exists()
+        return reverse("attendance-scanner" if front_desk else "dashboard")

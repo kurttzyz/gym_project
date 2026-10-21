@@ -7,8 +7,22 @@ from . import views
 from .members import views as member_views
 from .auth_views import GymLoginView
 from payments import views as payment_views
+from .attendance import views as attendance_views
 
 urlpatterns = [
+    path("desk/", attendance_views.scanner, name="attendance-scanner"),
+    path("desk/attendance/", attendance_views.history, name="attendance-history"),
+    path("desk/attendance/<uuid:visit_id>/checkout/", attendance_views.checkout_visit, name="attendance-checkout"),
+    path("portal/card/", attendance_views.my_card, name="member-card"),
+    path("portal/card.svg", attendance_views.my_qr, name="member-qr"),
+    path("portal/attendance/", attendance_views.my_history, name="member-attendance"),
+    path("manage/members/<uuid:member_id>/card/", attendance_views.owner_card, name="owner-member-card"),
+    path("manage/members/<uuid:member_id>/card.svg", attendance_views.owner_qr, name="owner-member-qr"),
+    path("manage/members/<uuid:member_id>/card/replace/", attendance_views.replace_card, name="member-card-replace"),
+    path("manage/branches/", attendance_views.locations, name="attendance-locations"),
+    path("manage/branches/<int:location_id>/", attendance_views.locations, name="attendance-location-edit"),
+    path("manage/staff/", attendance_views.staff, name="attendance-staff"),
+    path("manage/staff/<int:access_id>/access/", attendance_views.staff_access, name="attendance-staff-access"),
     path("manage/payments/", payment_views.owner_payments, name="owner-payments"),
     path("payments/copay/notify/", payment_views.notify, name="copay-notify"),
     path("manage/payments/<uuid:subscription_id>/issue/", payment_views.issue, name="payment-issue"),

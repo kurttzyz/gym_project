@@ -10,3 +10,4 @@ cryptography==46.0.7
 simplejson==3.20.2
 cffi==2.1.1
 pycparser==3.11
+qrcode==8.2

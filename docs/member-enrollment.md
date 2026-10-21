@@ -51,8 +51,8 @@ extension would overlap an already scheduled active term.
 
 Disabling a profile denies its portal login and access regardless of term state.
 Expired membership alone still permits portal login to review membership history.
-Entry eligibility is calculated here; QR scanning and attendance recording belong
-to the next milestone and are not implemented by this release.
+Entry eligibility is also used by the [QR attendance workflow](attendance.md),
+which checks access for each supervised front-desk entry.
 
 ## Permissions and recovery
 

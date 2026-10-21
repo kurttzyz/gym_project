@@ -46,6 +46,9 @@ import base64
 import json
 import tempfile
 import hashlib
+from gym_core.attendance.models import AttendanceVisit, AttendanceScan
+from gym_core.attendance.services import card_code, record_scan, rotate_card
+from concurrent.futures import ThreadPoolExecutor
 from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
@@ -970,6 +973,8 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
         with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(AttendanceScan)
+            editor.delete_model(AttendanceVisit)
             editor.delete_model(PaymentOrder)
             editor.delete_model(MembershipEvent)
             editor.delete_model(MemberSubscription)
@@ -1494,6 +1499,272 @@ class GymDatabaseTests(unittest.TestCase):
                 path.write_text(json.dumps({str(self.a.database_key):data}))
                 with self.assertRaises(CopayConfigurationError):
                     config_for_gym(self.a)
+
+
+    def active_card(self):
+        member, subscription = self.enrolled_member()
+        self.membership_action(member, subscription, "activate")
+        return member, subscription, card_code(self.a, member)
+
+    def scan_data(self, code, action="checkin", branch=None, request_id=None):
+        return {"code":code, "action":action, "location":str((branch or self.branch_a).pk),
+                "request_id":str(request_id or uuid4())}
+
+    def scan_card(self, code, action="checkin", branch=None, client=None, request_id=None):
+        return (client or self.tenant_client()).post("/desk/", self.scan_data(code, action, branch, request_id))
+
+    def desk_account(self, role="staff", gym=None):
+        user = get_user_model().objects.create_user(username="desk-"+uuid4().hex,password="Desk-Strong-84!")
+        Membership.objects.create(organization=gym or self.a,user=user,role=role)
+        return user
+
+    def test_attendance_valid_card_checkin_and_checkout(self):
+        member, subscription, code = self.active_card()
+        response = self.scan_card(code)
+        self.assertContainsText(response, "Entry allowed. Check-in recorded.")
+        visit = AttendanceVisit.objects.using(self.alias_a).get()
+        self.assertEqual(visit.member_id, member.pk)
+        self.assertEqual(visit.subscription_id, subscription.pk)
+        self.assertEqual(visit.checked_in_by_id, self.user.pk)
+        self.assertContainsText(self.scan_card(code,"checkout"), "Checked out successfully.")
+        visit.refresh_from_db(using=self.alias_a)
+        self.assertIsNotNone(visit.checked_out_at)
+        self.assertEqual(visit.checked_out_by_id,self.user.pk)
+        self.assertEqual(AttendanceScan.objects.using(self.alias_a).count(),2)
+
+    def test_attendance_repeated_scans_do_not_duplicate_open_visits(self):
+        member, subscription, code = self.active_card()
+        request_id=uuid4()
+        self.scan_card(code,request_id=request_id)
+        self.assertContainsText(self.scan_card(code,request_id=request_id),"Previously processed scan")
+        self.assertContainsText(self.scan_card(code),"Already checked in.")
+        self.assertEqual(AttendanceVisit.objects.using(self.alias_a).count(),1)
+        self.assertEqual(AttendanceScan.objects.using(self.alias_a).count(),2)
+
+    def test_attendance_replay_after_checkout_does_not_open_another_visit(self):
+        member, subscription, code = self.active_card()
+        request_id=uuid4()
+        self.scan_card(code,request_id=request_id)
+        self.scan_card(code,"checkout")
+        self.assertContainsText(self.scan_card(code,request_id=request_id),"No new entry or checkout was recorded.")
+        self.assertFalse(AttendanceVisit.objects.using(self.alias_a).filter(checked_out_at__isnull=True).exists())
+        self.assertContainsText(self.scan_card(code,"checkout",request_id=request_id),"already been used")
+        self.assertEqual(AttendanceScan.objects.using(self.alias_a).count(),2)
+
+    def test_attendance_concurrent_scans_are_serialized(self):
+        member, subscription, code = self.active_card()
+        def scan(_):
+            try:
+                with gym_database(self.alias_a):
+                    return record_scan(self.alias_a,self.a,code,self.branch_a.pk,"checkin",uuid4(),self.user.pk).outcome
+            finally:
+                connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes=list(executor.map(scan,range(2)))
+        self.assertCountEqual(outcomes,["checked_in","already_in"])
+        self.assertEqual(AttendanceVisit.objects.using(self.alias_a).count(),1)
+
+    def test_attendance_denies_nonactive_future_and_expired_terms(self):
+        member, subscription, code = self.active_card()
+        for status in ("pending","frozen","cancelled"):
+            with self.subTest(status=status):
+                MemberSubscription.objects.using(self.alias_a).filter(pk=subscription.pk).update(status=status)
+                self.assertContainsText(self.scan_card(code),"No active membership for today")
+        today=timezone.localdate()
+        for start,end in ((today+timedelta(days=1),today+timedelta(days=5)),(today-timedelta(days=3),today)):
+            MemberSubscription.objects.using(self.alias_a).filter(pk=subscription.pk).update(status="active",starts_on=start,expires_on=end)
+            self.assertContainsText(self.scan_card(code),"No active membership for today")
+        self.assertFalse(AttendanceVisit.objects.using(self.alias_a).exists())
+
+    def test_attendance_disabled_member_cannot_enter_but_can_exit(self):
+        member, subscription, code = self.active_card()
+        self.scan_card(code)
+        MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).update(is_active=False)
+        self.assertContainsText(self.scan_card(code),"Member access is disabled.")
+        self.assertContainsText(self.scan_card(code,"checkout"),"Checked out successfully.")
+        MemberSubscription.objects.using(self.alias_a).filter(pk=subscription.pk).update(status="cancelled")
+        self.assertContainsText(self.scan_card(code,"checkout"),"No open visit")
+
+    def test_attendance_different_branch_cannot_duplicate_or_checkout_visit(self):
+        member, subscription, code = self.active_card()
+        other=Location.objects.using(self.alias_a).create(name="Second branch")
+        self.scan_card(code)
+        self.assertContainsText(self.scan_card(code,branch=other),"Already checked in at another branch")
+        self.assertContainsText(self.scan_card(code,"checkout",branch=other),"Select that branch to check out")
+        self.assertTrue(AttendanceVisit.objects.using(self.alias_a).filter(checked_out_at__isnull=True).exists())
+        self.assertContainsText(self.scan_card(code,"checkout"),"Checked out successfully.")
+
+    def test_attendance_disabled_branch_blocks_entry_but_allows_exit(self):
+        member, subscription, code = self.active_card()
+        self.scan_card(code)
+        Location.objects.using(self.alias_a).filter(pk=self.branch_a.pk).update(is_active=False)
+        self.assertContainsText(self.scan_card(code),"branch is disabled")
+        self.assertContainsText(self.scan_card(code,"checkout"),"Checked out successfully.")
+        self.assertContainsText(self.scan_card(code),"branch is disabled")
+        self.assertEqual(AttendanceVisit.objects.using(self.alias_a).count(),1)
+
+    def test_attendance_foreign_tampered_and_plain_member_codes_are_denied(self):
+        member, subscription, code = self.active_card()
+        with gym_database(self.alias_b):
+            foreign=MemberProfile.objects.create(full_name="Foreign private name",email="foreign@example.com",phone="123")
+        foreign_code=card_code(self.b,foreign)
+        for value in (foreign_code,code[:-6]+"broken",member.member_number,"https://another.example.com/"):
+            response=self.scan_card(value)
+            self.assertContainsText(response,"Invalid or replaced card")
+            self.assertNotIn(b"Foreign private name",response.content)
+        self.assertFalse(AttendanceVisit.objects.using(self.alias_a).exists())
+        self.assertFalse(AttendanceScan.objects.using(self.alias_b).exists())
+
+    def test_attendance_card_replacement_invalidates_all_previous_copies(self):
+        member, subscription, old_code=self.active_card()
+        self.assertEqual(self.tenant_client().post(f"/manage/members/{member.pk}/card/replace/").status_code,302)
+        member.refresh_from_db(using=self.alias_a)
+        new_code=card_code(self.a,member)
+        self.assertNotEqual(old_code,new_code)
+        self.assertContainsText(self.scan_card(old_code),"Invalid or replaced card")
+        self.assertContainsText(self.scan_card(new_code),"Entry allowed")
+
+    def test_attendance_only_desk_roles_can_scan_and_read_attendance(self):
+        member, subscription, code=self.active_card()
+        for role in ("staff","manager"):
+            user=self.desk_account(role)
+            client=Client(HTTP_HOST=self.domain_a.hostname)
+            client.force_login(user)
+            self.assertEqual(client.get("/desk/").status_code,200)
+            self.assertEqual(client.get("/desk/attendance/").status_code,200)
+            for path in ("/manage/members/","/manage/payments/","/manage/staff/","/manage/branches/","/manage/website/"):
+                self.assertEqual(client.get(path).status_code,404)
+        account=self.desk_account("member")
+        client=Client(HTTP_HOST=self.domain_a.hostname);client.force_login(account)
+        self.assertEqual(client.get("/desk/").status_code,404)
+        self.assertEqual(self.scan_card(code,client=client).status_code,404)
+        self.assertEqual(client.get("/desk/attendance/").status_code,404)
+        self.assertEqual(AttendanceScan.objects.using(self.alias_a).count(),0)
+
+    def test_attendance_revoked_staff_sessions_lose_access_immediately(self):
+        member, subscription, code=self.active_card()
+        account=self.desk_account()
+        client=Client(HTTP_HOST=self.domain_a.hostname);client.force_login(account)
+        self.assertEqual(client.get("/desk/").status_code,200)
+        access=Membership.objects.get(organization=self.a,user=account)
+        self.assertEqual(self.tenant_client().post(f"/manage/staff/{access.pk}/access/",{"action":"disable"}).status_code,302)
+        self.assertEqual(self.scan_card(code,client=client).status_code,404)
+        self.assertEqual(client.get("/desk/attendance/").status_code,404)
+        account.refresh_from_db();self.assertTrue(account.is_active)
+
+    def test_attendance_owner_creates_unprivileged_gym_staff_without_scripts(self):
+        data={"username":"newdesk-"+uuid4().hex,"email":"desk@example.com","password1":"Desk-Strong-84!","password2":"Desk-Strong-84!","role":"staff"}
+        self.assertEqual(self.tenant_client().post("/manage/staff/",data).status_code,302)
+        account=get_user_model().objects.get(username=data["username"])
+        self.assertFalse(account.is_staff or account.is_superuser)
+        self.assertTrue(Membership.objects.filter(organization=self.a,user=account,role="staff").exists())
+        self.assertFalse(Membership.objects.filter(organization=self.b,user=account).exists())
+        client=Client(HTTP_HOST=self.domain_a.hostname)
+        self.assertEqual(client.post("/accounts/login/",{"username":account.username,"password":"Desk-Strong-84!"})["Location"],"/desk/")
+        self.assertEqual(Client(HTTP_HOST=self.domain_b.hostname).post("/accounts/login/",{"username":account.username,"password":"Desk-Strong-84!"}).status_code,200)
+        data.update({"username":"badrole-"+uuid4().hex,"role":"owner"})
+        self.assertEqual(self.tenant_client().post("/manage/staff/",data).status_code,200)
+        self.assertFalse(get_user_model().objects.filter(username=data["username"]).exists())
+
+    def test_attendance_staff_access_cannot_modify_owners_or_another_gym(self):
+        other=self.desk_account(gym=self.b)
+        foreign=Membership.objects.get(organization=self.b,user=other)
+        owner=Membership.objects.get(organization=self.a,user=self.user)
+        for access in (owner,foreign):
+            self.assertEqual(self.tenant_client().post(f"/manage/staff/{access.pk}/access/",{"action":"disable"}).status_code,404)
+            access.refresh_from_db();self.assertTrue(access.is_active)
+
+    def test_attendance_owner_can_create_edit_and_disable_branches(self):
+        client=self.tenant_client()
+        self.assertEqual(client.post("/manage/branches/",{"name":"New branch","address":"Owned address","is_active":"on"}).status_code,302)
+        branch=Location.objects.using(self.alias_a).get(name="New branch")
+        self.assertEqual(client.post(f"/manage/branches/{branch.pk}/",{"name":"Renamed branch","address":"Updated"}).status_code,302)
+        branch.refresh_from_db(using=self.alias_a);self.assertFalse(branch.is_active)
+        self.assertEqual(branch.name,"Renamed branch")
+        self.assertFalse(Location.objects.using(self.alias_b).filter(name="Renamed branch").exists())
+
+    def test_attendance_all_writes_require_csrf_and_get_never_records(self):
+        member,subscription,code=self.active_card()
+        client=self.tenant_client(csrf=True)
+        self.assertEqual(client.post("/desk/",self.scan_data(code)).status_code,403)
+        self.assertEqual(client.post(f"/manage/members/{member.pk}/card/replace/").status_code,403)
+        self.assertEqual(client.post("/manage/branches/",{"name":"Invalid"}).status_code,403)
+        self.assertEqual(client.post("/manage/staff/",{}).status_code,403)
+        self.assertEqual(self.tenant_client().get("/desk/").status_code,200)
+        self.assertEqual(self.tenant_client().get(f"/manage/members/{member.pk}/card/replace/").status_code,405)
+        self.assertFalse(AttendanceVisit.objects.using(self.alias_a).exists())
+
+    def test_attendance_manual_checkout_needs_reason_and_records_operator(self):
+        member,subscription,code=self.active_card();self.scan_card(code)
+        visit=AttendanceVisit.objects.using(self.alias_a).get()
+        path=f"/desk/attendance/{visit.pk}/checkout/"
+        self.assertEqual(self.tenant_client().get(path).status_code,405)
+        self.tenant_client().post(path,{})
+        visit.refresh_from_db(using=self.alias_a);self.assertIsNone(visit.checked_out_at)
+        self.tenant_client().post(path,{"note":"Member forgot to scan when leaving"})
+        visit.refresh_from_db(using=self.alias_a)
+        self.assertEqual(visit.checkout_note,"Member forgot to scan when leaving")
+        self.assertEqual(visit.checked_out_by_id,self.user.pk)
+        recorded=visit.checked_out_at
+        self.tenant_client().post(path,{"note":"Must not rewrite history"})
+        visit.refresh_from_db(using=self.alias_a);self.assertEqual(visit.checked_out_at,recorded)
+
+    def test_attendance_member_card_and_history_only_show_their_own_data(self):
+        member,subscription,code=self.active_card();self.scan_card(code)
+        token=self.invitation_token(member)
+        client=Client(HTTP_HOST=self.domain_a.hostname);client.post(f"/activate/{token}/",self.claim_payload())
+        card=client.get("/portal/card/")
+        self.assertContainsText(card,member.member_number)
+        self.assertIn("no-store",card["Cache-Control"])
+        self.assertEqual(card["Referrer-Policy"],"no-referrer")
+        image=client.get("/portal/card.svg")
+        self.assertEqual(image["Content-Type"],"image/svg+xml")
+        self.assertIn(b"<svg",image.content)
+        self.assertContainsText(client.get("/portal/attendance/"),self.branch_a.name)
+        self.assertEqual(client.get(f"/manage/members/{member.pk}/card/").status_code,404)
+        MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).update(is_active=False)
+        self.assertEqual(client.get("/portal/card/").status_code,404)
+        self.assertEqual(client.get("/portal/card.svg").status_code,404)
+        self.assertEqual(client.get("/portal/attendance/").status_code,404)
+
+    def test_attendance_filters_reject_invalid_input_and_respect_gym(self):
+        member,subscription,code=self.active_card();self.scan_card(code)
+        client=self.tenant_client()
+        self.assertContainsText(client.get("/desk/attendance/?open_only=on"),member.full_name)
+        response=client.get("/desk/attendance/?date=not-a-date")
+        self.assertEqual(response.status_code,200)
+        self.assertContainsText(response,"No visits match")
+        response=client.get("/desk/attendance/?date="+(timezone.localdate()-timedelta(days=1)).isoformat())
+        self.assertContainsText(response,"No visits match")
+        self.assertEqual(self.tenant_client(self.domain_b).get("/desk/attendance/").status_code,404)
+
+    def test_attendance_scan_audit_never_stores_raw_credentials(self):
+        member,subscription,code=self.active_card();self.scan_card(code)
+        scan=AttendanceScan.objects.using(self.alias_a).get()
+        self.assertNotIn(code,str(scan.__dict__))
+        self.assertEqual(len(scan.fingerprint),64)
+        self.assertEqual(scan.actor_id,self.user.pk)
+        self.assertEqual(scan.outcome,"checked_in")
+        for table in ("gym_core_attendancevisit","gym_core_attendancescan"):
+            self.assertNotIn(table,connection.introspection.table_names())
+            self.assertIn(table,connections[self.alias_a].introspection.table_names())
+            self.assertIn(table,connections[self.alias_b].introspection.table_names())
+
+    def test_attendance_upgrade_button_adds_module_without_losing_members(self):
+        from django.db.migrations.recorder import MigrationRecorder
+        member,subscription,code=self.active_card()
+        with connections[self.alias_a].schema_editor() as editor:
+            editor.delete_model(AttendanceScan);editor.delete_model(AttendanceVisit)
+            editor.remove_field(MemberProfile,MemberProfile._meta.get_field("qr_version"))
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core",name="0004_memberprofile_qr_version_attendancevisit_and_more").delete()
+        self.user.is_superuser=True;self.user.save()
+        self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"),"Retry setup")
+        self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/retry-setup/").status_code,302)
+        member.refresh_from_db(using=self.alias_a)
+        self.assertEqual(member.full_name,"Jamie Applicant")
+        self.assertIsNotNone(member.qr_version)
+        self.assertEqual(AttendanceVisit.objects.using(self.alias_a).count(),0)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).count(),1)
 
 
 

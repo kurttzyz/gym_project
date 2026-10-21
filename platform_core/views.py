@@ -16,6 +16,7 @@ from websites.models import ContactMessage, WebsiteSettings
 from gym_core.memberships.models import MembershipPlan, MemberSubscription
 from gym_core.members.models import MemberProfile
 from payments.models import PaymentOrder
+from gym_core.attendance.models import AttendanceScan, AttendanceVisit
 from gyms.databases import GymDatabaseUnavailable, provision_database, ready_database
 from gyms.forms import DomainForm, GymForm, OwnerAccountForm
 from gyms.models import GymDomain, Membership, Organization
@@ -88,9 +89,11 @@ def gym_detail_context(request, gym, domain_form=None):
             branches = list(Location.objects.all())
             WebsiteSettings.objects.get(pk=1)
             MembershipPlan.objects.exists()
-            MemberProfile.objects.exists()
+            MemberProfile.objects.first()
             MemberSubscription.objects.exists()
             PaymentOrder.objects.first()
+            AttendanceVisit.objects.first()
+            AttendanceScan.objects.first()
             ContactMessage.objects.exists()
     except (GymDatabaseUnavailable, DatabaseError, WebsiteSettings.DoesNotExist, OSError):
         database_error = True

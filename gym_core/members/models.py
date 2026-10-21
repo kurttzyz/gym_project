@@ -10,6 +10,7 @@ def member_number():
 
 class MemberProfile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    qr_version = models.UUIDField(default=uuid.uuid4, editable=False)
     member_number = models.CharField(max_length=34, unique=True, default=member_number, editable=False)
     user_id = models.PositiveBigIntegerField(null=True, blank=True, unique=True, editable=False)
     full_name = models.CharField(max_length=160)
