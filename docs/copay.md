@@ -156,3 +156,15 @@ The direct merchant workflow above remains the default. The platform now also
 supports [central member collections with per-gym ledgers and manual withdrawals](central-collections.md).
 This mode uses a separate operator configuration and platform callback, keeps gym
 liabilities separate from SaaS revenue, and starts in sandbox pending provider approval.
+
+### Transport diagnostics
+
+Failed HTTP calls now report the upstream HTTP status separately from DNS, TLS,
+timeout and connection failures. The application warning log includes only a fixed
+operation name, environment, failure category and numeric HTTP status. Provider
+response bodies, headers, exception text, credentials and payment payloads are not
+logged. Inspect `journalctl -u powerhouse-gym` after **Recheck payment status**.
+A reachable unauthenticated GET does not prove that a signed POST is accepted;
+HTTP 401/403 may require checking merchant credentials, IP allowlisting or provider
+edge rules with COPAY. Do not automatically retry SubmitDeposit for an unknown
+outcome. Recheck uses GetDepositDetail and does not submit another payment.

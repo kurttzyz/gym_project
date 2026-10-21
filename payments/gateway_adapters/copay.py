@@ -2,6 +2,9 @@
 import base64
 import hashlib
 import json
+import logging
+import socket
+import ssl
 import os
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -200,8 +203,32 @@ class CopayGateway:
             if result.get("isSuccess") is not True or not isinstance(result.get("data"), dict):
                 raise CopayError("COPAY did not accept this request. Check the payment status before retrying.")
             return result["data"]
-        except (HTTPError, URLError, TimeoutError, OSError):
-            raise CopayError("COPAY could not be reached. Check status before creating another payment.") from None
+        except HTTPError as error:
+            self.transport_failure(path, "http", status=error.code)
+            error.close()
+            raise CopayError(f"COPAY returned HTTP {error.code}. Recheck payment status; contact the platform administrator before creating another payment.") from None
+        except (URLError, TimeoutError, OSError) as error:
+            reason = error.reason if isinstance(error, URLError) else error
+            category = ("tls" if isinstance(reason, ssl.SSLError) else
+                        "dns" if isinstance(reason, socket.gaierror) else
+                        "timeout" if isinstance(reason, TimeoutError) else "connection")
+            self.transport_failure(path, category)
+            messages = {
+                "tls": "COPAY TLS connection failed.",
+                "dns": "COPAY hostname could not be resolved.",
+                "timeout": "COPAY request timed out.",
+                "connection": "COPAY connection failed.",
+            }
+            raise CopayError(messages[category] + " Recheck payment status before creating another payment.") from None
+
+    def transport_failure(self, path, category, *, status=None):
+        # Only fixed classifications and HTTP status: never URLs, exception text,
+        # merchant codes, envelopes, keys, response bodies, or member/order details.
+        operation = {"/api/Deposit/SubmitDeposit": "deposit_submit",
+                     "/api/Deposit/GetDepositDetail": "deposit_requery"}.get(path, "request")
+        logging.getLogger(__name__).warning(
+            "COPAY transport operation=%s environment=%s category=%s http_status=%s",
+            operation, self.config.environment, category, status if type(status) is int else "none")
 
     def submit(self, order, member, client_ip):
         return self.request("/api/Deposit/SubmitDeposit", {

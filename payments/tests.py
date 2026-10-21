@@ -4,7 +4,10 @@ import json
 import unittest
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
+import io
+import socket
+import ssl
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding as rsa_padding
 from .gateway_adapters.copay import CopayConfig, CopayGateway, CopayError, json_object, money
@@ -89,3 +92,35 @@ class CopayProtocolTests(unittest.TestCase):
             self.gateway.request("/api/Deposit/GetDepositDetail", {})
         self.assertNotIn("sensitive", str(error.exception))
         self.assertEqual(opener.open.call_count, 1)
+
+
+    def test_http_failure_reports_status_without_exposing_provider_body_or_headers(self):
+        for code in [400,403,429,500]:
+            opener=MagicMock()
+            opener.open.side_effect=HTTPError('https://sensitive.example/secret',code,'private reason',
+                {'X-Secret':'private header'},io.BytesIO(b'private provider body'))
+            with self.subTest(code=code),patch('payments.gateway_adapters.copay.build_opener',return_value=opener),self.assertLogs('payments.gateway_adapters.copay',level='WARNING') as logs:
+                with self.assertRaises(CopayError) as caught:
+                    self.gateway.request('/api/Deposit/GetDepositDetail',{'secret':'private request'})
+            self.assertIn('HTTP '+str(code),str(caught.exception))
+            output=str(caught.exception)+' '.join(logs.output)
+            for hidden in ['sensitive.example','private reason','private header','private provider body','private request',self.config.aes_key]:
+                self.assertNotIn(hidden,output)
+            self.assertIn('operation=deposit_requery',output)
+            opener.open.assert_called_once()
+
+    def test_transport_classification_never_logs_exception_text_or_retries(self):
+        cases=[(URLError(socket.gaierror(-2,'private DNS details')),'dns'),
+            (URLError(ssl.SSLError('private TLS details')),'tls'),
+            (URLError(TimeoutError('private timeout')),'timeout'),
+            (TimeoutError('private timeout'),'timeout'),(OSError('private failure'),'connection')]
+        for failure,category in cases:
+            opener=MagicMock();opener.open.side_effect=failure
+            with self.subTest(category=category),patch('payments.gateway_adapters.copay.build_opener',return_value=opener),self.assertLogs('payments.gateway_adapters.copay',level='WARNING') as logs:
+                with self.assertRaises(CopayError) as caught:
+                    self.gateway.request('/api/Deposit/SubmitDeposit',{})
+            output=str(caught.exception)+' '.join(logs.output)
+            self.assertIn('category='+category,output)
+            self.assertNotIn('private',output)
+            self.assertIn('operation=deposit_submit',output)
+            opener.open.assert_called_once()
