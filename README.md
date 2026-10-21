@@ -30,7 +30,7 @@ stop` stops the server without removing data; never use `down -v` on data to ret
 Sign in at `/accounts/login/` on a platform host. Platform superusers can **Add another gym** from `/`.
 Creation asks for the owner account and automatically provisions the gym database
 and website template. Existing gyms have a Create gym owner action on their detail
-page; additional memberships can be managed in `/admin/`. Gym users sign in on their gym's verified custom domain and see only that gym. Gym records cannot be created/deleted through central admin, and
+page; additional memberships can be managed in `/platform-admin/`. Gym users sign in on their gym's verified custom domain and see only that gym. Gym records cannot be created/deleted through central admin, and
 branch administration is not exposed through the central admin.
 
 ## Structure
@@ -62,7 +62,7 @@ are separate from tenant membership terms and payment records.
 - `/accounts/login/` and `/accounts/logout/`: session login and POST logout.
 - `/api/organizations/`: platform-superuser-only organization API.
 - `/health/`: platform database connectivity check; not an all-gym readiness check.
-- `/admin/`: platform maintenance and access assignment.
+- `/platform-admin/`: platform maintenance and access assignment.
 
 Owner website editing is available at `/manage/website/` and the owner dashboard
 at `/manage/` on each gym domain. Member portals are at `/portal/`. Self-service

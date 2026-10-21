@@ -251,7 +251,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.user.save()
         from django.contrib.auth.models import Permission
         self.user.user_permissions.add(Permission.objects.get(codename="view_organization"))
-        self.assertEqual(self.client.get("/admin/gyms/organization/").status_code, 302)
+        self.assertEqual(self.client.get("/platform-admin/gyms/organization/").status_code, 302)
 
     def test_missing_database_fails_without_recreating(self):
         _, name = register_database(self.a)
@@ -307,7 +307,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.user.is_superuser = True
         self.user.save()
         client = self.tenant_client()
-        for path in ("/admin/", "/gyms/new/", f"/gyms/{self.b.slug}/", "/api/organizations/"):
+        for path in ("/platform-admin/", "/gyms/new/", f"/gyms/{self.b.slug}/", "/api/organizations/"):
             self.assertEqual(client.get(path).status_code, 404)
         self.assertContainsText(client.get("/portal/"), "Address A")
         self.assertNotIn(b"Private address B", client.get("/portal/").content)
@@ -444,7 +444,7 @@ class GymDatabaseTests(unittest.TestCase):
         })
         self.assertEqual(response["Location"], "/manage/")
         self.assertContainsText(client.get("/manage/"), "Customize website")
-        self.assertEqual(client.get("/admin/").status_code, 404)
+        self.assertEqual(client.get("/platform-admin/").status_code, 404)
 
     def test_platform_can_create_owner_for_existing_gym(self):
         self.assertEqual(self.client.get(f"/gyms/{self.a.slug}/owners/new/").status_code, 403)
@@ -1921,7 +1921,7 @@ class GymDatabaseTests(unittest.TestCase):
                 "gym_core.attendance.views.record_scan",side_effect=AssertionError("Attendance bypass")):
             response=client.post("/desk/",self.scan_data(code))
             self.assertEqual(response.status_code,503)
-            self.assertContainsText(response,"Open platform billing",status=503)
+            self.assertIn(b"Open platform billing",response.content)
         self.assertFalse(AttendanceVisit.objects.using(self.alias_a).exists())
         self.assertEqual(client.get("/manage/").status_code,503)
         self.assertEqual(Client(HTTP_HOST=self.domain_a.hostname).get("/").status_code,200)
