@@ -228,3 +228,7 @@ Full refunds and optional stock returns are owner-only. Retail, member, and plat
 billing ledgers remain separate. Existing gyms can install the module with Retry
 setup; managed SaaS agreements require POS in their current entitlements. See the
 [POS setup, transactions, and permissions guide](docs/pos.md).
+
+### Class schedules and trainer bookings
+
+Gym owners can add trainers at `/manage/trainers/` and publish sessions at `/manage/classes/new/`. Staff review the timetable and rosters at `/desk/classes/`; members book or cancel from `/portal/classes/`. Full sessions offer a waitlist, and cancellations promote eligible members in queue order. All records stay in that gym's database. Class access uses the memberships SaaS module. See [the class booking guide](docs/classes.md) for setup, permissions, and limits.

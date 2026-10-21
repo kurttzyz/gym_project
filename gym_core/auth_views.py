@@ -22,5 +22,7 @@ class GymLoginView(LoginView):
             access = access_for_gym(self.request.tenant)
             if access.allowed and not access.modules.get("attendance", False) and access.modules.get("pos", False):
                 return reverse("pos-checkout")
+            if access.allowed and not access.modules.get("attendance", False) and access.modules.get("memberships", False):
+                return reverse("class-schedule")
             return reverse("attendance-scanner")
         return reverse("dashboard")

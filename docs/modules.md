@@ -19,7 +19,7 @@ gym_core/                        Tenant operational application
   memberships/                   Plans, applications, enrollment, dated terms and lifecycle audit
   attendance/                    QR cards, supervised check-in/out, visits and scan audit
   staff/                         Staff/manager front-desk access; owner account UI in attendance/
-  trainers/                      Planned trainers
+  classes/                       Trainer profiles, schedules, bookings, waitlists and audit
   urls.py, views.py              Existing gym member portal and owner dashboard
 tenant_data/                     Existing tenant branch model and migrations
 pos/                             Tenant application
@@ -122,3 +122,5 @@ Owner account creation and website settings are documented in [owner websites](o
 
 
 See [membership website](membership-website.md) for public plans/applications and private owner workflows.
+
+Classes and trainers are part of the memberships module: owner-maintained trainer profiles and sessions, staff rosters, and member self-service reservations with capacity, waitlists, and cancellations. See [classes.md](classes.md).

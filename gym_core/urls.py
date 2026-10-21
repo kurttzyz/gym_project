@@ -11,7 +11,18 @@ from .attendance import views as attendance_views
 from platform_core.billing import views as billing_views
 from pos import views as pos_views
 
+from .classes import views as class_views
+
 urlpatterns = [
+    path("manage/trainers/", class_views.trainers, name="class-trainers"),
+    path("manage/trainers/<uuid:trainer_id>/", class_views.trainers, name="class-trainer-edit"),
+    path("manage/classes/new/", class_views.new_session, name="class-new"),
+    path("manage/classes/<uuid:session_id>/cancel/", class_views.cancel_class, name="class-cancel"),
+    path("desk/classes/", class_views.schedule, name="class-schedule"),
+    path("desk/classes/<uuid:session_id>/", class_views.roster, name="class-roster"),
+    path("portal/classes/", class_views.member_classes, name="member-classes"),
+    path("portal/classes/<uuid:session_id>/book/", class_views.reserve, name="class-book"),
+    path("portal/bookings/<uuid:booking_id>/cancel/", class_views.cancel_reservation, name="class-booking-cancel"),
     path("pos/", pos_views.checkout, name="pos-checkout"),
     path("pos/confirm/", pos_views.confirm_sale, name="pos-confirm"),
     path("pos/sales/", pos_views.sales, name="pos-sales"),

@@ -1,0 +1,4 @@
+{% extends "gyms/base.html" %}{% block content %}
+<p><a href="{% url 'owner-dashboard' %}">Owner dashboard</a> · <a href="{% url 'class-schedule' %}">Class schedule</a></p>
+<h1>Trainers</h1><p>Trainer profiles belong to this gym. Disabling a trainer stops new bookings; cancel their future sessions separately.</p>
+<div class="grid"><section class="card"><h2>{% if editing %}Edit trainer{% else %}Add trainer{% endif %}</h2><form method="post">{% csrf_token %}{{ form.as_p }}<button>Save trainer</button></form></section><section class="card"><h2>Your trainers</h2>{% for trainer in trainers %}<h3>{{ trainer.name }}</h3><p>{{ trainer.specialty }} · {{ trainer.is_active|yesno:'Active,Disabled' }}</p><p>{{ trainer.bio|linebreaksbr }}</p><a href="{% url 'class-trainer-edit' trainer.pk %}">Edit profile</a>{% empty %}<p>No trainers yet.</p>{% endfor %}</section></div>{% endblock %}

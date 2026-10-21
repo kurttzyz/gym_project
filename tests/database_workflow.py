@@ -59,6 +59,10 @@ from websites.forms import WebsiteSettingsForm
 from django.forms.models import model_to_dict
 
 
+from gym_core.classes.models import Trainer, ClassSession, ClassBooking, BookingEvent
+from gym_core.classes.services import (create_session as create_class, book as book_class,
+    cancel_booking as cancel_class_booking, cancel_session as cancel_class_session, BookingError)
+
 class GymDatabaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -979,6 +983,8 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
         with connections[self.alias_a].schema_editor() as editor:
+            for model in (BookingEvent, ClassBooking, ClassSession, Trainer):
+                editor.delete_model(model)
             editor.delete_model(AttendanceScan)
             editor.delete_model(AttendanceVisit)
             editor.delete_model(PaymentOrder)
@@ -1760,9 +1766,12 @@ class GymDatabaseTests(unittest.TestCase):
         from django.db.migrations.recorder import MigrationRecorder
         member,subscription,code=self.active_card()
         with connections[self.alias_a].schema_editor() as editor:
+            for model in (BookingEvent, ClassBooking, ClassSession, Trainer):
+                editor.delete_model(model)
             editor.delete_model(AttendanceScan);editor.delete_model(AttendanceVisit)
             editor.remove_field(MemberProfile,MemberProfile._meta.get_field("qr_version"))
-        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core",name="0004_memberprofile_qr_version_attendancevisit_and_more").delete()
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app="gym_core",name__in=["0004_memberprofile_qr_version_attendancevisit_and_more",
+            "0005_trainer_classbooking_bookingevent_classsession_and_more"]).delete()
         self.user.is_superuser=True;self.user.save()
         self.assertContainsText(self.client.get(f"/gyms/{self.a.slug}/"),"Retry setup")
         self.assertEqual(self.client.post(f"/gyms/{self.a.slug}/retry-setup/").status_code,302)
@@ -2362,6 +2371,224 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertTrue(MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).exists())
         self.assertEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title,"Keep brand intact")
 
+
+    def class_fixture(self, capacity=1, hour=0, trainer=None):
+        user = self.desk_account('member')
+        with gym_database(self.alias_a):
+            member = MemberProfile.objects.create(user_id=user.pk, full_name='Booking member',
+                email=uuid4().hex+'@example.com', phone='09123456789')
+            plan = MembershipPlan.objects.create(name='Class access', price=100)
+            today = timezone.localdate()
+            MemberSubscription.objects.create(member=member, plan=plan, plan_name=plan.name, price=100,
+                period='month', status='active', starts_on=today, expires_on=today+timedelta(days=30))
+            trainer = trainer or Trainer.objects.create(name='Trainer Alex')
+            start = timezone.now()+timedelta(days=1, hours=hour)
+            session = create_class(self.alias_a, dict(title='Strength fundamentals', description='Small group session',
+                trainer=trainer, location=self.branch_a, starts_at=start, ends_at=start+timedelta(hours=1),
+                capacity=capacity), self.user.pk)
+        return user, member, session
+
+    def another_class_member(self):
+        user = self.desk_account('member')
+        with gym_database(self.alias_a):
+            first = MemberProfile.objects.first()
+            term = first.subscriptions.first()
+            member = MemberProfile.objects.create(user_id=user.pk, full_name='Second member',
+                email=uuid4().hex+'@example.com', phone='09120000000')
+            MemberSubscription.objects.create(member=member, plan=term.plan, plan_name=term.plan_name,
+                price=100, period='month', status='active', starts_on=term.starts_on, expires_on=term.expires_on)
+        return user, member
+
+    def test_classes_booking_waitlist_and_cancellation_promotes_fifo(self):
+        user, member, session = self.class_fixture()
+        user2, member2 = self.another_class_member()
+        one = book_class(self.alias_a, session.pk, member.pk, user.pk)
+        two = book_class(self.alias_a, session.pk, member2.pk, user2.pk)
+        self.assertEqual(one.status, 'confirmed')
+        self.assertEqual(two.status, 'waitlisted')
+        cancel_class_booking(self.alias_a, one.pk, user.pk)
+        two.refresh_from_db(using=self.alias_a)
+        self.assertEqual(two.status, 'confirmed')
+        self.assertTrue(BookingEvent.objects.using(self.alias_a).filter(booking=two, action='promoted', actor_id=None).exists())
+
+    def test_classes_duplicate_booking_and_cancel_are_idempotent(self):
+        user, member, session = self.class_fixture()
+        one = book_class(self.alias_a, session.pk, member.pk, user.pk)
+        self.assertEqual(book_class(self.alias_a, session.pk, member.pk, user.pk).pk, one.pk)
+        cancel_class_booking(self.alias_a, one.pk, user.pk)
+        cancel_class_booking(self.alias_a, one.pk, user.pk)
+        self.assertEqual(BookingEvent.objects.using(self.alias_a).count(), 2)
+
+    def test_classes_membership_must_cover_session_and_be_active(self):
+        user, member, session = self.class_fixture()
+        for status in ['pending', 'frozen', 'cancelled']:
+            MemberSubscription.objects.using(self.alias_a).filter(member=member).update(status=status)
+            with self.assertRaises(BookingError):book_class(self.alias_a, session.pk, member.pk, user.pk)
+        MemberSubscription.objects.using(self.alias_a).filter(member=member).update(status='active', starts_on=timezone.localdate()-timedelta(days=1), expires_on=timezone.localdate())
+        with self.assertRaises(BookingError):book_class(self.alias_a, session.pk, member.pk, user.pk)
+
+    def test_classes_member_overlap_across_trainers_is_blocked(self):
+        user, member, session = self.class_fixture()
+        _, _, other = self.class_fixture()
+        book_class(self.alias_a, session.pk, member.pk, user.pk)
+        with self.assertRaises(BookingError):book_class(self.alias_a, other.pk, member.pk, user.pk)
+
+    def test_classes_trainer_overlap_and_invalid_schedule_rejected(self):
+        _, _, session = self.class_fixture()
+        with gym_database(self.alias_a):
+            data = dict(title='Conflict', description='', trainer=session.trainer, location=self.branch_a,
+                starts_at=session.starts_at, ends_at=session.ends_at, capacity=5)
+            with self.assertRaises(BookingError):create_class(self.alias_a, data, self.user.pk)
+            data['starts_at'] = session.ends_at
+            data['ends_at'] = session.ends_at+timedelta(hours=1)
+            create_class(self.alias_a, data, self.user.pk)
+            data['capacity'] = 0
+            with self.assertRaises(BookingError):create_class(self.alias_a, data, self.user.pk)
+
+    def test_classes_session_cancel_preserves_history_and_cancels_waitlist(self):
+        user, member, session = self.class_fixture()
+        user2, member2 = self.another_class_member()
+        book_class(self.alias_a, session.pk, member.pk, user.pk)
+        book_class(self.alias_a, session.pk, member2.pk, user2.pk)
+        cancel_class_session(self.alias_a, session.pk, 'Trainer unavailable', self.user.pk)
+        self.assertEqual(ClassBooking.objects.using(self.alias_a).filter(status='cancelled').count(), 2)
+        cancel_class_session(self.alias_a, session.pk, 'Duplicate retry', self.user.pk)
+        self.assertEqual(BookingEvent.objects.using(self.alias_a).filter(action='session_cancelled').count(), 2)
+        with self.assertRaises(BookingError):book_class(self.alias_a, session.pk, member.pk, user.pk)
+
+    def test_classes_ineligible_waitlist_skipped_without_taking_seat(self):
+        user, member, session = self.class_fixture()
+        user2, member2 = self.another_class_member()
+        user3, member3 = self.another_class_member()
+        one = book_class(self.alias_a, session.pk, member.pk, user.pk)
+        two = book_class(self.alias_a, session.pk, member2.pk, user2.pk)
+        three = book_class(self.alias_a, session.pk, member3.pk, user3.pk)
+        MemberProfile.objects.using(self.alias_a).filter(pk=member2.pk).update(is_active=False)
+        cancel_class_booking(self.alias_a, one.pk, user.pk)
+        two.refresh_from_db(using=self.alias_a); three.refresh_from_db(using=self.alias_a)
+        self.assertEqual(two.status, 'waitlisted'); self.assertEqual(three.status, 'confirmed')
+
+    def test_classes_concurrent_last_seat_never_overbooks(self):
+        user, member, session = self.class_fixture()
+        user2, member2 = self.another_class_member()
+        def reserve(pair):
+            try:return book_class(self.alias_a, session.pk, pair[1], pair[0]).status
+            finally:connections[self.alias_a].close()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(reserve, [(user.pk, member.pk), (user2.pk, member2.pk)]))
+        self.assertCountEqual(results, ['confirmed', 'waitlisted'])
+
+    def test_classes_member_cannot_cancel_another_members_booking(self):
+        user, member, session = self.class_fixture()
+        other, _ = self.another_class_member()
+        booking = book_class(self.alias_a, session.pk, member.pk, user.pk)
+        client = Client(HTTP_HOST=self.domain_a.hostname); client.force_login(other)
+        self.assertEqual(client.post(f'/portal/bookings/{booking.pk}/cancel/').status_code, 404)
+        booking.refresh_from_db(using=self.alias_a); self.assertEqual(booking.status, 'confirmed')
+
+    def test_classes_owner_pages_and_staff_roster_permissions(self):
+        _, _, session = self.class_fixture()
+        for url in ['/manage/trainers/', '/manage/classes/new/', '/desk/classes/', f'/desk/classes/{session.pk}/']:
+            self.assertEqual(self.tenant_client().get(url).status_code, 200)
+        staff = self.desk_account()
+        client = Client(HTTP_HOST=self.domain_a.hostname); client.force_login(staff)
+        self.assertEqual(client.get(f'/desk/classes/{session.pk}/').status_code, 200)
+        self.assertEqual(client.get('/manage/trainers/').status_code, 404)
+        self.assertEqual(client.post(f'/manage/classes/{session.pk}/cancel/', {'reason':'No'}).status_code, 404)
+
+    def test_classes_member_portal_book_and_cancel_and_csrf(self):
+        user, member, session = self.class_fixture()
+        client = Client(HTTP_HOST=self.domain_a.hostname); client.force_login(user)
+        self.assertContainsText(client.get('/portal/classes/'), 'Strength fundamentals')
+        self.assertEqual(client.get(f'/portal/classes/{session.pk}/book/').status_code, 405)
+        self.assertEqual(client.post(f'/portal/classes/{session.pk}/book/').status_code, 302)
+        booking = ClassBooking.objects.using(self.alias_a).get()
+        self.assertContainsText(client.get('/portal/classes/'), 'Confirmed')
+        self.assertEqual(client.post(f'/portal/bookings/{booking.pk}/cancel/').status_code, 302)
+        secure = Client(HTTP_HOST=self.domain_a.hostname, enforce_csrf_checks=True); secure.force_login(user)
+        self.assertEqual(secure.post(f'/portal/classes/{session.pk}/book/').status_code, 403)
+
+    def test_classes_cross_gym_host_and_ids_fail_closed(self):
+        user, member, session = self.class_fixture()
+        Membership.objects.create(user=user, organization=self.b, role='member')
+        MemberProfile.objects.using(self.alias_b).create(user_id=user.pk, full_name='Gym B member', email='b@example.com', phone='0')
+        client = Client(HTTP_HOST=self.domain_b.hostname); client.force_login(user)
+        self.assertNotIn(b'Strength fundamentals', client.get('/portal/classes/').content)
+        self.assertEqual(client.post(f'/portal/classes/{session.pk}/book/').status_code, 404)
+        self.assertEqual(self.tenant_client(self.domain_b).get('/desk/classes/').status_code, 404)
+        self.assertFalse(ClassBooking.objects.using(self.alias_b).exists())
+
+    def test_classes_disabled_trainer_branch_and_started_session_reject_booking(self):
+        user, member, session = self.class_fixture()
+        Trainer.objects.using(self.alias_a).filter(pk=session.trainer_id).update(is_active=False)
+        with self.assertRaises(BookingError):book_class(self.alias_a, session.pk, member.pk, user.pk)
+        Trainer.objects.using(self.alias_a).filter(pk=session.trainer_id).update(is_active=True)
+        Location.objects.using(self.alias_a).filter(pk=session.location_id).update(is_active=False)
+        with self.assertRaises(BookingError):book_class(self.alias_a, session.pk, member.pk, user.pk)
+        Location.objects.using(self.alias_a).filter(pk=session.location_id).update(is_active=True)
+        ClassSession.objects.using(self.alias_a).filter(pk=session.pk).update(starts_at=timezone.now()-timedelta(minutes=1))
+        with self.assertRaises(BookingError):book_class(self.alias_a, session.pk, member.pk, user.pk)
+
+    def test_classes_cancelled_rebooking_goes_to_back_of_queue(self):
+        user, member, session = self.class_fixture()
+        user2, member2 = self.another_class_member()
+        one = book_class(self.alias_a, session.pk, member.pk, user.pk)
+        two = book_class(self.alias_a, session.pk, member2.pk, user2.pk)
+        cancel_class_booking(self.alias_a, two.pk, user2.pk)
+        rebooked = book_class(self.alias_a, session.pk, member2.pk, user2.pk)
+        self.assertEqual(rebooked.pk, two.pk)
+        self.assertEqual(rebooked.status, 'waitlisted')
+        self.assertGreater(rebooked.queued_at, two.queued_at)
+
+    def test_classes_managed_membership_module_controls_access(self):
+        user, member, session = self.class_fixture()
+        plan = SaaSPlan.objects.create(name='No membership '+uuid4().hex, price=100, memberships=False)
+        assign_saas_plan(self.a.pk, plan.pk, 14, 0, self.user.pk)
+        client = Client(HTTP_HOST=self.domain_a.hostname); client.force_login(user)
+        self.assertEqual(client.get('/portal/classes/').status_code, 503)
+        self.assertEqual(self.tenant_client().get('/desk/classes/').status_code, 503)
+        self.assertEqual(client.post(f'/portal/classes/{session.pk}/book/').status_code, 503)
+        self.assertFalse(ClassBooking.objects.using(self.alias_a).exists())
+
+
+    def test_classes_owner_can_publish_and_cancel_through_forms(self):
+        client = self.tenant_client()
+        self.assertEqual(client.post('/manage/trainers/', {'name':'Mia','specialty':'Yoga','bio':'Gentle practice','is_active':'on'}).status_code,302)
+        trainer = Trainer.objects.using(self.alias_a).get()
+        start = timezone.localtime(timezone.now()+timedelta(days=2)).replace(second=0,microsecond=0)
+        data = {'title':'Morning yoga','description':'All levels','trainer':str(trainer.pk),'location':str(self.branch_a.pk),
+            'starts_at':start.strftime('%Y-%m-%dT%H:%M'),'ends_at':(start+timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M'),'capacity':'12'}
+        response = client.post('/manage/classes/new/',data)
+        self.assertEqual(response.status_code,302)
+        session = ClassSession.objects.using(self.alias_a).get()
+        self.assertEqual(session.starts_at,start)
+        self.assertEqual(session.created_by_id,self.user.pk)
+        self.assertContainsText(client.get(response['Location']),'Morning yoga')
+        self.assertEqual(client.post(f'/manage/classes/{session.pk}/cancel/',{'reason':'Holiday closure'}).status_code,302)
+        session.refresh_from_db(using=self.alias_a)
+        self.assertEqual(session.cancellation_reason,'Holiday closure')
+
+    def test_classes_upgrade_button_installs_tables_and_preserves_members(self):
+        from django.db.migrations.recorder import MigrationRecorder
+        member,term,code = self.active_card()
+        with connections[self.alias_a].schema_editor() as editor:
+            for model in (BookingEvent,ClassBooking,ClassSession,Trainer):editor.delete_model(model)
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__startswith='0005_').delete()
+        self.make_platform_admin()
+        self.assertContainsText(self.client.get(f'/gyms/{self.a.slug}/'),'Retry setup')
+        self.assertEqual(self.client.post(f'/gyms/{self.a.slug}/retry-setup/').status_code,302)
+        self.assertEqual(ClassSession.objects.using(self.alias_a).count(),0)
+        self.assertTrue(MemberProfile.objects.using(self.alias_a).filter(pk=member.pk).exists())
+
+    def test_classes_membership_only_plan_supports_branch_setup_and_staff_login(self):
+        plan = self.saas_plan(memberships=True,attendance=False,pos=False)
+        self.saas_assignment(plan=plan,trial=14)
+        self.assertEqual(self.tenant_client().get('/manage/branches/').status_code,200)
+        self.assertEqual(self.tenant_client().get('/desk/classes/').status_code,200)
+        account = self.desk_account()
+        client = Client(HTTP_HOST=self.domain_a.hostname)
+        response = client.post('/accounts/login/',{'username':account.username,'password':'Desk-Strong-84!'})
+        self.assertEqual(response['Location'],'/desk/classes/')
 
 
 if __name__ == "__main__":

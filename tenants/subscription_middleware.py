@@ -43,7 +43,7 @@ class TenantSubscriptionMiddleware:
         if name in SHARED_OPERATIONS_ROUTES:
             if not access.allowed:
                 return self.block(request)
-            if not (access.modules.get("attendance", False) or access.modules.get("pos", False)):
+            if not (access.modules.get("attendance", False) or access.modules.get("pos", False) or access.modules.get("memberships", False)):
                 return self.block(request, module=True)
             return self.get_response(request)
         module = ("pos" if name in POS_ROUTES else "websites" if name in WEBSITE_ROUTES else "attendance" if name in ATTENDANCE_ROUTES

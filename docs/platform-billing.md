@@ -153,5 +153,5 @@ integration also remain future work.
 
 POS is a separate module, default off on managed plans. Existing invoice/trial
 snapshots without a `pos` key stay unchanged. Branch/staff setup can be used when
-attendance or POS is included. Existing POS receipt reads remain available during
+attendance, POS, or memberships (class scheduling) is included. Existing POS receipt reads remain available during
 restriction for authorized owners/original cashiers, like member payment receipts.
