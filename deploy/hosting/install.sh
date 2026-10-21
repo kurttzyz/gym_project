@@ -23,6 +23,7 @@ fi
 install -o root -g root -m 644 "$SOURCE/agent.py" /opt/powerhouse-hosting/agent.py
 install -d -m 755 /etc/nginx/powerhouse-managed /var/lib/powerhouse-acme
 mkdir -p /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
+install -d -m 700 /var/lib/powerhouse-certbot/config /var/lib/powerhouse-certbot/work /var/lib/powerhouse-certbot/logs
 python3 - "$APP_UID" "$APP_GID" "$IPV4" "$ACME_EMAIL" "$PLATFORM_HOST" "$CERTBOT" <<'PY'
 import ipaddress, json, os, sys
 from pathlib import Path
@@ -37,7 +38,10 @@ for item in [Path(certbot).resolve(), *Path(certbot).resolve().parents]:
 path = '/etc/powerhouse-hosting.json'
 with open(path, 'w', opener=lambda p, flags: os.open(p, flags, 0o600)) as out:
     json.dump(dict(allowed_uid=int(uid), allowed_gid=int(gid), ipv4=ipv4,
-                   email=email, reserved_hosts=[host.lower()], certbot=certbot), out)
+                   email=email, reserved_hosts=[host.lower()], certbot=certbot,
+                   certbot_config_dir='/var/lib/powerhouse-certbot/config',
+                   certbot_work_dir='/var/lib/powerhouse-certbot/work',
+                   certbot_logs_dir='/var/lib/powerhouse-certbot/logs'), out)
 os.chmod(path, 0o600)
 PY
 # A separate include leaves existing sites untouched.
@@ -54,7 +58,11 @@ install -o root -g root -m 644 "$SOURCE/powerhouse-hosting.service" /etc/systemd
 install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
 printf '#!/bin/sh\n/usr/sbin/nginx -t && /usr/bin/systemctl reload nginx\n' > /etc/letsencrypt/renewal-hooks/deploy/powerhouse-reload
 chmod 755 /etc/letsencrypt/renewal-hooks/deploy/powerhouse-reload
+install -o root -g root -m 644 "$SOURCE/renew.py" /opt/powerhouse-hosting/renew.py
+install -o root -g root -m 644 "$SOURCE/powerhouse-hosting-renew.service" /etc/systemd/system/
+install -o root -g root -m 644 "$SOURCE/powerhouse-hosting-renew.timer" /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable --now powerhouse-hosting-renew.timer
 systemctl enable powerhouse-hosting
 systemctl restart powerhouse-hosting
 echo 'Agent installed. Configure the application and start its dedicated worker/scheduler; see docs/domain-hosting.md.'

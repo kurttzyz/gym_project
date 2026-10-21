@@ -1,0 +1,10 @@
+{
+  "environment": "sandbox",
+  "merchant_code": "",
+  "aes_key": "",
+  "merchant_private_key_file": "secrets/central-merchant-private.pem",
+  "copay_public_key_file": "secrets/central-copay-public.pem",
+  "public_origin": "https://megapaldo.com",
+  "payment_method": "GCQR0",
+  "cashier_hosts": []
+}

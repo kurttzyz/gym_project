@@ -149,3 +149,10 @@ with the issued credentials and registered domain, verify the merchant's payment
 methods/limits and cashier response, then switch that gym to separately issued
 production credentials. No live or sandbox provider certification has been performed
 without those credentials.
+
+## Optional central collection model
+
+The direct merchant workflow above remains the default. The platform now also
+supports [central member collections with per-gym ledgers and manual withdrawals](central-collections.md).
+This mode uses a separate operator configuration and platform callback, keeps gym
+liabilities separate from SaaS revenue, and starts in sandbox pending provider approval.

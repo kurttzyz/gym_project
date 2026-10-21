@@ -1,4 +1,6 @@
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from platform_core.models import GymWallet
 from django.db import DatabaseError
 from django.http import Http404
 from django.shortcuts import render
@@ -57,4 +59,6 @@ def owner_dashboard(request):
     except (GymDatabaseUnavailable, DatabaseError, OSError):
         return render(request, "gyms/unavailable.html", status=503)
     return render(request, "gyms/owner_dashboard.html", {"site": site, "branch_count": branch_count,
+        "collection_wallet": GymWallet.objects.filter(organization=request.tenant,environment="production").first() if settings.CENTRAL_COLLECTIONS_ENABLED else None,
+        "central_collections": settings.CENTRAL_COLLECTIONS_ENABLED,
         "member_count": member_count, "plan_count": plan_count, "application_count": application_count, "message_count": message_count,**overview})

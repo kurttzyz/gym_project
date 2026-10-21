@@ -1858,6 +1858,233 @@ class GymDatabaseTests(unittest.TestCase):
         return record_saas_payment(invoice.pk,self.user.pk,reference or "BANK-"+uuid4().hex,
             "complimentary" if invoice.amount==0 else "bank","Receipt verified by platform operator")
 
+    def central_fixture(self, environment="sandbox"):
+        from platform_core.collections import gateway as central
+        member, term, order, config = self.copay_order(environment)
+        order.status = "submitting"
+        order.central_collection = True
+        order.save(using=self.alias_a)
+        row = central.register_collection(self.a, order)
+        return member, term, order, config, row
+
+    def payout_destination(self, gym=None, verified=True):
+        from platform_core.models import PayoutDestination
+        return PayoutDestination.objects.create(organization=gym or self.a, bank="Test bank", account_name="Gym Owner",
+            account_number="TEST-"+uuid4().hex, created_by=self.user, verified_by=self.user if verified else None,
+            verified_at=timezone.now() if verified else None)
+
+    def test_central_collection_credits_only_correct_gym_once_and_not_platform_revenue(self):
+        from platform_core.collections import gateway as central
+        from platform_core.models import GymWallet, WalletEntry
+        member, term, order, config, row = self.central_fixture()
+        result = self.copay_result(order)
+        central.apply_result(row.pk,result)
+        central.apply_result(row.pk,result)
+        wallet = GymWallet.objects.get(organization=self.a,environment="sandbox")
+        self.assertEqual(wallet.pending,order.amount)
+        self.assertEqual(wallet.available,0)
+        self.assertEqual(WalletEntry.objects.filter(wallet=wallet,action="collection").count(),1)
+        self.assertFalse(GymWallet.objects.filter(organization=self.b).exists())
+        self.assertEqual(PlatformPayment.objects.count(),0)
+        central.sync_tenant(row.pk)
+        with gym_database(self.alias_a):
+            term.refresh_from_db()
+            self.assertEqual(term.status,"pending")
+            order.refresh_from_db()
+            self.assertEqual(order.status,"paid")
+        row.refresh_from_db()
+        self.assertTrue(row.tenant_synced)
+
+    def test_central_verified_production_sync_activates_member_without_paying_saas(self):
+        from platform_core.collections import gateway as central
+        member,term,order,config,row=self.central_fixture("production")
+        subscription,invoice=self.saas_assignment()
+        central.apply_result(row.pk,self.copay_result(order))
+        central.sync_tenant(row.pk)
+        with gym_database(self.alias_a):
+            term.refresh_from_db()
+            self.assertEqual(term.status,"active")
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status,"issued")
+        self.assertFalse(access_for_gym(self.a).allowed)
+
+    def test_central_credit_survives_tenant_outage_and_recovers_without_duplicate(self):
+        from platform_core.collections import gateway as central
+        from platform_core.models import GymWallet,WalletEntry
+        member,term,order,config,row=self.central_fixture()
+        result=self.copay_result(order)
+        central.apply_result(row.pk,result)
+        with patch.object(central,"ready_database",side_effect=OSError("unavailable")), self.assertRaises(OSError):
+            central.sync_tenant(row.pk)
+        row.refresh_from_db();self.assertFalse(row.tenant_synced)
+        central.apply_result(row.pk,result)
+        central.sync_tenant(row.pk)
+        self.assertEqual(WalletEntry.objects.filter(wallet__organization=self.a,action="collection").count(),1)
+        self.assertEqual(GymWallet.objects.get(organization=self.a,environment="sandbox").pending,order.amount)
+
+    def test_central_callback_signature_and_immutable_registry_select_correct_tenant(self):
+        from platform_core.collections import gateway as central
+        from platform_core.models import GymWallet
+        member,term,order,config,row=self.central_fixture()
+        body=self.copay_callback(order,config)
+        with patch.object(central,"central_config",return_value=config),patch.object(CopayGateway,"requery",return_value=self.copay_result(order)):
+            path="/collections/copay/notify/"
+            self.assertEqual(self.client.post(path,body,content_type="application/json").content,b"success")
+            self.assertEqual(self.client.post(path,body,content_type="application/json").content,b"success")
+            bad=json.loads(body);bad["Signature"]=base64.b64encode(b"bad").decode()
+            self.assertEqual(self.client.post(path,json.dumps(bad),content_type="application/json").status_code,400)
+            self.assertEqual(self.tenant_client().post(path,body,content_type="application/json").status_code,404)
+        self.assertFalse(GymWallet.objects.filter(organization=self.b).exists())
+
+    def test_central_release_and_withdrawal_reserve_and_manual_payout_audit(self):
+        from platform_core.collections import gateway as central,ledger
+        from platform_core.models import GymWallet,WalletEntry
+        member,term,order,config,row=self.central_fixture()
+        central.apply_result(row.pk,self.copay_result(order))
+        destination=self.payout_destination()
+        with self.assertRaises(ledger.LedgerError):
+            ledger.request_withdrawal(self.a,"sandbox",destination.pk,"1",self.user.pk,uuid4())
+        ledger.release(row.pk,self.user.pk,"TEST settlement statement")
+        ledger.release(row.pk,self.user.pk,"TEST settlement statement replay")
+        key=uuid4()
+        withdrawal=ledger.request_withdrawal(self.a,"sandbox",destination.pk,"10",self.user.pk,key)
+        duplicate=ledger.request_withdrawal(self.a,"sandbox",destination.pk,"10",self.user.pk,key)
+        self.assertEqual(withdrawal.pk,duplicate.pk)
+        wallet=GymWallet.objects.get(organization=self.a,environment="sandbox")
+        self.assertEqual(wallet.pending,0);self.assertEqual(wallet.reserved,10)
+        self.assertEqual(wallet.available,order.amount-10)
+        ledger.transition(withdrawal.pk,"approve",self.user.pk,"Reviewed")
+        ledger.transition(withdrawal.pk,"process",self.user.pk,"Manual transfer in progress")
+        with self.assertRaises(ledger.LedgerError):
+            ledger.transition(withdrawal.pk,"cancel",self.user.pk,"Uncertain transfer",gym=self.a)
+        ledger.transition(withdrawal.pk,"pay",self.user.pk,"Confirmed manual payout","TESTPAYOUT-"+key.hex)
+        ledger.transition(withdrawal.pk,"pay",self.user.pk,"Replay","TESTPAYOUT-"+key.hex)
+        wallet.refresh_from_db();self.assertEqual(wallet.reserved,0)
+        self.assertEqual(WalletEntry.objects.filter(wallet=wallet,action="payout").count(),1)
+
+    def test_central_destination_verification_and_cross_gym_withdrawal_blocked(self):
+        from platform_core.collections import ledger
+        from platform_core.models import GymWallet
+        destination=self.payout_destination(verified=False)
+        wallet=ledger.wallet_for(self.a,"sandbox")
+        ledger.adjust(wallet.pk,"available","100",self.user.pk,uuid4().hex,"Test correction")
+        for target in [destination,self.payout_destination(gym=self.b)]:
+            with self.assertRaises(ledger.LedgerError):
+                ledger.request_withdrawal(self.a,"sandbox",target.pk,"50",self.user.pk,uuid4())
+        wallet.refresh_from_db();self.assertEqual(wallet.available,100);self.assertEqual(wallet.reserved,0)
+
+    def test_central_concurrent_withdrawals_cannot_overdraw(self):
+        from platform_core.collections import ledger
+        destination=self.payout_destination()
+        wallet=ledger.wallet_for(self.a,"sandbox")
+        ledger.adjust(wallet.pk,"available","100",self.user.pk,uuid4().hex,"Test opening funds")
+        def withdraw(_):
+            try:
+                ledger.request_withdrawal(self.a,"sandbox",destination.pk,"80",self.user.pk,uuid4())
+                return True
+            except ledger.LedgerError:
+                return False
+            finally:
+                connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            self.assertEqual(sorted(pool.map(withdraw,range(2))),[False,True])
+        wallet.refresh_from_db();self.assertEqual(wallet.available,20);self.assertEqual(wallet.reserved,80)
+
+    def test_central_rejection_refunds_reservation_once_and_adjustment_cannot_overdraw(self):
+        from platform_core.collections import ledger
+        wallet=ledger.wallet_for(self.a,"sandbox")
+        ledger.adjust(wallet.pk,"available","100",self.user.pk,uuid4().hex,"Test funds")
+        row=ledger.request_withdrawal(self.a,"sandbox",self.payout_destination().pk,"80",self.user.pk,uuid4())
+        ledger.transition(row.pk,"reject",self.user.pk,"Destination not accepted")
+        ledger.transition(row.pk,"reject",self.user.pk,"Replay")
+        wallet.refresh_from_db();self.assertEqual(wallet.available,100);self.assertEqual(wallet.reserved,0)
+        with self.assertRaises(ledger.LedgerError):
+            ledger.adjust(wallet.pk,"available","-101",self.user.pk,uuid4().hex,"Invalid refund")
+        wallet.refresh_from_db();self.assertEqual(wallet.available,100)
+
+    def test_central_owner_wallet_isolated_and_role_post_csrf_enforced(self):
+        from platform_core.collections import ledger
+        wallet=ledger.wallet_for(self.a,"sandbox")
+        ledger.adjust(wallet.pk,"available","100",self.user.pk,uuid4().hex,"Visible only to gym A")
+        other=ledger.wallet_for(self.b,"sandbox")
+        ledger.adjust(other.pk,"available","9876",self.user.pk,uuid4().hex,"PRIVATE GYM B LEDGER")
+        response=self.tenant_client().get("/manage/wallet/")
+        self.assertContainsText(response,"100.00")
+        self.assertNotIn(b"PRIVATE GYM B LEDGER",response.content)
+        desk=Client(HTTP_HOST=self.domain_a.hostname);desk.force_login(self.desk_account())
+        self.assertEqual(desk.get("/manage/wallet/").status_code,404)
+        self.assertEqual(self.client.get("/collections/").status_code,403)
+        self.make_platform_admin()
+        self.assertEqual(self.client.get("/collections/").status_code,200)
+        path=f"/collections/wallets/{wallet.pk}/adjust/"
+        self.assertEqual(self.client.get(path).status_code,405)
+        csrf=Client(HTTP_HOST="localhost",enforce_csrf_checks=True);csrf.force_login(self.user)
+        self.assertEqual(csrf.post(path).status_code,403)
+        owner=self.tenant_client()
+        self.assertEqual(owner.post("/manage/wallet/destinations/",{"bank":"UI-BANK","account_name":"Gym A","account_number":"TEST-1234"}).status_code,302)
+        from platform_core.models import PayoutDestination,GymWithdrawal
+        destination=PayoutDestination.objects.get(organization=self.a,bank="UI-BANK")
+        verify=f"/collections/destinations/{destination.pk}/verify/"
+        self.assertEqual(self.client.post(verify,{"note":"Account ownership independently checked"}).status_code,302)
+        key=uuid4()
+        payload={"environment":"sandbox","amount":"20.00","destination":str(destination.pk),"request_key":str(key)}
+        with patch.object(CopayGateway,"request") as provider:
+            self.assertEqual(owner.post("/manage/wallet/",payload).status_code,302)
+            self.assertEqual(owner.post("/manage/wallet/",payload).status_code,302)
+            withdrawal=GymWithdrawal.objects.get(request_key=key)
+            for action in ["approve","process","pay"]:
+                self.assertEqual(self.client.post(f"/collections/withdrawals/{withdrawal.pk}/",{
+                    "action":action,"note":"Verified manual workflow","reference":"UI-"+key.hex}).status_code,302)
+            provider.assert_not_called()
+        withdrawal.refresh_from_db();self.assertEqual(withdrawal.status,"paid")
+        wallet.refresh_from_db();self.assertEqual(wallet.available,80);self.assertEqual(wallet.reserved,0)
+
+    @override_settings(CENTRAL_COLLECTIONS_ENABLED=True,CENTRAL_COLLECTIONS_PRODUCTION_APPROVED=False)
+    def test_central_production_disabled_without_approval_and_sandbox_config_shared(self):
+        from platform_core.collections import gateway as central
+        config=self.copay_config("production")
+        with patch.object(central,"central_config",return_value=config), self.assertRaises(CopayConfigurationError):
+            config_for_gym(self.a)
+        config=self.copay_config("sandbox")
+        with patch.object(central,"central_config",return_value=config):
+            a=config_for_gym(self.a);b=config_for_gym(self.b)
+            self.assertEqual(a.merchant_code,b.merchant_code)
+            self.assertNotEqual(a.public_origin,b.public_origin)
+            member,term=self.enrolled_member()
+            with gym_database(self.alias_a):
+                order=create_order(self.alias_a,self.a,term.pk)
+                self.assertTrue(order.central_collection)
+                with patch.object(CopayGateway,"request",return_value={"transactionId":"CENTRAL-"+order.pk.hex,"url":"https://cashier.marvelpay.net/pay"}) as provider:
+                    for _ in range(2):
+                        started=start_checkout(self.alias_a,self.a,order.pk,"203.0.113.1")
+                self.assertEqual(provider.call_count,1)
+                self.assertEqual(started.status,"pending")
+            from platform_core.models import CentralCollection
+            self.assertEqual(CentralCollection.objects.filter(organization=self.a,tenant_order_id=order.pk).count(),1)
+
+    def test_central_received_net_credited_and_short_payment_does_not_activate(self):
+        from platform_core.collections import gateway as central
+        from platform_core.models import GymWallet
+        member,term,order,config,row=self.central_fixture("production")
+        with self.assertRaises(CopayError):
+            central.apply_result(row.pk,self.copay_result(order,netAmount=str(order.amount+1)))
+        result=self.copay_result(order,netAmount="1.00")
+        central.apply_result(row.pk,result);central.sync_tenant(row.pk)
+        wallet=GymWallet.objects.get(organization=self.a,environment="production")
+        self.assertEqual(wallet.pending,1)
+        with gym_database(self.alias_a):
+            term.refresh_from_db();self.assertEqual(term.status,"pending")
+
+    def test_central_zero_invalid_and_tampered_collection_results_rejected(self):
+        from platform_core.collections import gateway as central,ledger
+        member,term,order,config,row=self.central_fixture()
+        result=self.copay_result(order)
+        for changes in [{"amount":"1.00"},{"currencyCode":"USD"},{"merchantTransactionId":"wrong"},{"paymentMethodCode":"MYP"},{"statusId":"6"}]:
+            with self.assertRaises(CopayError):
+                central.apply_result(row.pk,{**result,**changes})
+        for value in ["0","-1","NaN","1.001"]:
+            with self.assertRaises(ledger.LedgerError):ledger.amount(value)
+
     def test_saas_unmanaged_gyms_keep_existing_operations(self):
         self.assertEqual(access_for_gym(self.a).state,"Unmanaged")
         self.assertTrue(access_for_gym(self.a).allowed)

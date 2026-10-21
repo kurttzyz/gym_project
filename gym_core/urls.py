@@ -8,6 +8,7 @@ from .members import views as member_views
 from .auth_views import GymLoginView
 from payments import views as payment_views
 from .attendance import views as attendance_views
+from platform_core.collections import views as collection_views
 from platform_core.billing import views as billing_views
 from pos import views as pos_views
 
@@ -17,6 +18,9 @@ from .self_service import views as self_service_views
 from accounts import recovery_views
 
 urlpatterns = [
+    path("manage/wallet/", collection_views.owner_wallet, name="owner-wallet"),
+    path("manage/wallet/destinations/", collection_views.add_destination, name="wallet-destination-add"),
+    path("manage/wallet/withdrawals/<uuid:withdrawal_id>/cancel/", collection_views.cancel_withdrawal, name="wallet-withdrawal-cancel"),
     path("portal/profile/", self_service_views.profile, name="member-profile"),
     path("portal/renewals/", self_service_views.renewals, name="member-renewals"),
     path("portal/renewals/<uuid:request_id>/cancel/", self_service_views.withdraw_renewal, name="member-renewal-cancel"),

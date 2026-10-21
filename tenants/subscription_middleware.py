@@ -5,7 +5,7 @@ from django.utils.cache import patch_cache_control
 from platform_core.billing.services import access_for_gym
 
 
-RECOVERY_ROUTES = {"member-reset-request", "member-reset-requested", "member-reset-confirm", "member-reset-complete", "member-password-change", "member-profile", "member-payments","owner-notifications", "notification-detail", "notification-test", "notification-retry", "member-email-preferences","login", "logout", "tenant-saas-billing", "tenant-saas-invoice",
+RECOVERY_ROUTES = {"owner-wallet", "wallet-destination-add", "wallet-withdrawal-cancel","member-reset-request", "member-reset-requested", "member-reset-confirm", "member-reset-complete", "member-password-change", "member-profile", "member-payments","owner-notifications", "notification-detail", "notification-test", "notification-retry", "member-email-preferences","login", "logout", "tenant-saas-billing", "tenant-saas-invoice",
                    "copay-notify", "payment-return", "payment-detail", "payment-recheck", "payment-receipt", "pos-receipt"}
 PUBLIC_READS = {"home", "about", "memberships", "contact", "contact-thanks", "join-thanks"}
 WEBSITE_ROUTES = PUBLIC_READS | {"join", "website-edit"}

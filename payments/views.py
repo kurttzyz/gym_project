@@ -1,5 +1,5 @@
-import ipaddress
 from functools import wraps
+from django.conf import settings
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.contrib.auth.decorators import login_required
@@ -14,6 +14,7 @@ from gym_core.memberships.views import owner_page
 from gym_core.memberships.models import MemberSubscription
 from gyms.databases import GymDatabaseUnavailable, ready_database
 from gyms.models import Membership
+from .client_ip import gateway_client_ip
 from .models import PaymentOrder
 from .services import create_order, start_checkout, reconcile, process_callback
 from .gateway_adapters.copay import CopayError, CopayConfigurationError, config_for_gym
@@ -52,7 +53,7 @@ def owner_payments(request):
         status = "COPAY is not configured. Ask your platform administrator to complete the merchant settings."
     orders = PaymentOrder.objects.select_related("subscription__member")
     page = Paginator(orders, 25).get_page(request.GET.get("page"))
-    return render(request, "payments/list.html", {"page": page, "gateway_status": status})
+    return render(request, "payments/list.html", {"page": page, "gateway_status": status, "central_collections": settings.CENTRAL_COLLECTIONS_ENABLED})
 
 
 @owner_page
@@ -78,8 +79,7 @@ def detail(request, order_id):
 def checkout(request, order_id):
     order = authorized_order(request, order_id)
     try:
-        # Do not accept an arbitrary forwarded IP header from the browser.
-        client_ip = str(ipaddress.ip_address(request.META.get("REMOTE_ADDR", "")))
+        client_ip = gateway_client_ip(request)
         order = start_checkout(ready_database(request.tenant), request.tenant, order.pk, client_ip)
         if order.status == "pending" and order.checkout_url:
             from .services import gateway_for_order

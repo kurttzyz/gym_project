@@ -248,3 +248,7 @@ The platform, gym-owner, staff, and member dashboards now share a responsive nav
 ### Automatic custom-domain hosting
 
 Optional VPS hosting automation checks gym ownership and DNS, configures an isolated Nginx site, issues HTTPS through Certbot, and reports progress/retries in the platform dashboard. A root-owned socket agent handles hosting separately from Django. See [one-time VPS setup and operating guide](docs/domain-hosting.md). External gym DNS records still require owner configuration. Disabled by default; this release adds a central `gyms` migration.
+
+### Central gym collections and manual withdrawals
+
+Optional central COPAY collection mode records member payments in separate gym/environment ledgers. Owners view pending, available and reserved balances, submit verified payout destinations and request withdrawals. Platform admins verify settlement, approve requests and record completed manual payouts; no payout API is invoked. Software subscription revenue stays separate. Sandbox is the starting mode; production requires explicit COPAY approval configuration. See [setup, accounting rules and recovery](docs/central-collections.md). Upgrade central migrations and existing gym payment schemas before enabling it.

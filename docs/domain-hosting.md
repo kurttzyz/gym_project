@@ -29,7 +29,7 @@ writes are atomic, checked with `nginx -t`, and rolled back on validation/reload
 failure. Individual failed issuance attempts require explicit retry to avoid
 hammering ACME rate limits. Inspect Certbot logs before retrying. A crashed worker's
 lease expires after ten minutes; live domains aren't issued again on every sweep.
-The existing Certbot renewal timer must be enabled; its deploy hook reloads Nginx.
+Managed gym certificates use the separate `/var/lib/powerhouse-certbot/config` profile, matching the VPS hosting-agent update. The installer enables a dedicated `powerhouse-hosting-renew.timer`; the existing global Certbot job continues handling platform/other sites.
 Live is a recorded setup result, not continuous external DNS/TLS health monitoring.
 
 ## One-time VPS installation
@@ -93,8 +93,8 @@ sudo systemctl status powerhouse-hosting powerhouse-worker powerhouse-scheduler 
 sudo systemctl list-timers --all | grep -i certbot
 ```
 
-If no renewal timer exists, configure a single daily `certbot renew` timer for your
-Certbot installation. Do not duplicate a pre-existing snap/system renewal job.
+Check `sudo systemctl list-timers --all | grep powerhouse-hosting-renew` for managed gym certificates. Its root-owned renewal helper reads the configured profile directories and reloads Nginx after a successful renewal command.
+For the platform domain, if no global renewal timer exists, configure a single daily `certbot renew` timer for your Certbot installation. Do not duplicate a pre-existing snap/system renewal job.
 Verify `sudo certbot renew --dry-run`. Ports 80/443 must be reachable publicly.
 No firewall changes, database passwords or existing site changes are needed.
 

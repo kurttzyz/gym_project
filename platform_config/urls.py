@@ -3,9 +3,17 @@ from django.contrib.auth import views as auth_views
 from django.urls import path
 from platform_core import views
 from platform_core.billing import views as billing_views
+from platform_core.collections import views as collection_views
 from gyms.forms import PortalAuthenticationForm
 
 urlpatterns = [
+    path("collections/", collection_views.dashboard, name="platform-collections"),
+    path("collections/copay/notify/", collection_views.notify, name="central-copay-notify"),
+    path("collections/destinations/<uuid:destination_id>/verify/", collection_views.verify_destination, name="collection-destination-verify"),
+    path("collections/<uuid:collection_id>/release/", collection_views.release, name="collection-release"),
+    path("collections/<uuid:collection_id>/recheck/", collection_views.recheck, name="collection-recheck"),
+    path("collections/withdrawals/<uuid:withdrawal_id>/", collection_views.withdrawal_action, name="collection-withdrawal-action"),
+    path("collections/wallets/<int:wallet_id>/adjust/", collection_views.adjustment, name="collection-adjustment"),
     path("billing/", billing_views.dashboard, name="saas-dashboard"),
     path("billing/plans/", billing_views.plans, name="saas-plans"),
     path("billing/plans/new/", billing_views.edit_plan, name="saas-plan-new"),

@@ -209,3 +209,12 @@ DOMAIN_HOSTING_IPV4 = os.environ.get("DOMAIN_HOSTING_IPV4", "")
 CELERY_BEAT_SCHEDULE["domain-hosting"] = {"task": "gyms.hosting.sweep_domains", "schedule": 60.0}
 # Trust only the header overwritten by the local reverse proxy.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Central member collections and gym ledgers; sandbox until COPAY approves the model.
+CENTRAL_COLLECTIONS_ENABLED = os.environ.get("CENTRAL_COLLECTIONS_ENABLED", "false").lower() == "true"
+CENTRAL_COPAY_CONFIG_FILE = os.environ.get("CENTRAL_COPAY_CONFIG_FILE", "")
+CENTRAL_COLLECTIONS_PRODUCTION_APPROVED = os.environ.get("CENTRAL_COLLECTIONS_PRODUCTION_APPROVED", "false").lower() == "true"
+CELERY_BEAT_SCHEDULE["central-collection-sync"] = {"task": "platform_core.collections.gateway.retry_tenant_sync", "schedule": 60.0}
+
+# Enable only when loopback-only Gunicorn is behind Nginx overwriting X-Real-IP.
+COPAY_TRUST_LOOPBACK_PROXY = os.environ.get("COPAY_TRUST_LOOPBACK_PROXY", "false").lower() == "true"

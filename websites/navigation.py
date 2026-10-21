@@ -14,7 +14,7 @@ def workspace_navigation(request,role,modules):
     if request.tenant is None:
         if not request.user.is_authenticated or not request.user.is_superuser:return [],'',''
         group('Workspace',[item('dashboard','Overview','grid'),item('gym-add','Add a gym','plus'),
-            item('saas-dashboard','Subscriptions','wallet','saas-invoice','saas-subscription'),item('saas-plans','Software plans','layers','saas-plan-new','saas-plan-edit')])
+            item('platform-collections','Collections & payouts','wallet'),item('saas-dashboard','Subscriptions','wallet','saas-invoice','saas-subscription'),item('saas-plans','Software plans','layers','saas-plan-new','saas-plan-edit')])
         group('Platform',[item('admin:index','Administration','shield')])
         return groups,'Platform workspace',reverse('dashboard')
     if not role:return [],'Member access',reverse('home')
@@ -30,7 +30,7 @@ def workspace_navigation(request,role,modules):
         if modules.get('memberships'):operations.extend([item('class-schedule','Class schedule','calendar','class-roster','class-new'),item('class-trainers','Trainers','dumbbell','class-trainer-edit')])
         group('Gym operations',operations)
         if modules.get('pos'):group('Retail',[item('pos-checkout','Point of sale','bag','pos-confirm'),item('pos-products','Products','box','pos-product-new','pos-product-edit'),item('pos-inventory','Inventory','layers','pos-adjustment'),item('pos-sales','Sales & receipts','receipt','pos-receipt','pos-refund'),item('pos-report','Daily sales','chart')])
-        finance=[]
+        finance=[item('owner-wallet','Wallet & withdrawals','wallet')]
         if modules.get('payments'):finance.append(item('owner-payments','Member payments','wallet','payment-detail','payment-receipt'))
         group('Finance',finance)
         business=[]

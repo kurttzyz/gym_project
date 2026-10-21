@@ -80,7 +80,7 @@ class HostingAgentTests(SimpleTestCase):
             self.assertEqual(original.read_text(), 'keep')
 
     def test_certificate_failure_cannot_mark_live(self):
-        config = {'reserved_hosts': [], 'certbot': '/usr/bin/certbot', 'email': 'ops@example.com'}
+        config = {'reserved_hosts': [], 'certbot': '/usr/bin/certbot', 'email': 'ops@example.com', 'certbot_config_dir':'/var/lib/powerhouse-certbot/config', 'certbot_work_dir':'/var/lib/powerhouse-certbot/work', 'certbot_logs_dir':'/var/lib/powerhouse-certbot/logs'}
         with patch.object(agent, 'check_dns', return_value=None), patch.object(agent, 'refuse_existing_site'), patch.object(agent, 'write_config') as write, patch.object(agent, 'run', side_effect=agent.SetupError('ACME failed')):
             with self.assertRaises(agent.SetupError):
                 agent.provision({'hostname': 'gym.example.com', 'token': 'a' * 43}, config)
@@ -91,10 +91,10 @@ class HostingAgentTests(SimpleTestCase):
         self.assertNotIn('proxy_pass', agent.config_text('gym.example.com'))
         secure = agent.config_text('gym.example.com', tls=True)
         self.assertIn('proxy_set_header Host $host', secure)
-        self.assertIn('ssl_certificate /etc/letsencrypt/live/gym.example.com/', secure)
+        self.assertIn('ssl_certificate /var/lib/powerhouse-certbot/config/live/gym.example.com/', secure)
 
     def test_acme_and_reload_success(self):
-        config = {'reserved_hosts': [], 'certbot': '/usr/bin/certbot', 'email': 'ops@example.com'}
+        config = {'reserved_hosts': [], 'certbot': '/usr/bin/certbot', 'email': 'ops@example.com', 'certbot_config_dir':'/var/lib/powerhouse-certbot/config', 'certbot_work_dir':'/var/lib/powerhouse-certbot/work', 'certbot_logs_dir':'/var/lib/powerhouse-certbot/logs'}
         with tempfile.TemporaryDirectory() as directory, patch.object(agent, 'MANAGED', Path(directory)), patch.object(agent, 'check_dns', return_value=None), patch.object(agent, 'refuse_existing_site'), patch.object(agent, 'write_config') as write, patch.object(agent, 'run') as run:
             result = agent.provision({'hostname': 'gym.example.com', 'token': 'a' * 43}, config)
         self.assertEqual(result['status'], 'live')
@@ -142,3 +142,32 @@ class HostingWorkerTests(SimpleTestCase):
             hosting.process_domain(1)
             hosting.sweep_domains()
         model.objects.assert_not_called()
+
+
+class ManagedCertificateRenewalTests(SimpleTestCase):
+    def module(self):
+        spec = importlib.util.spec_from_file_location('hosting_renew', Path(__file__).resolve().parent.parent / 'deploy/hosting/renew.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_renewal_uses_separate_profile_before_nginx_reload(self):
+        import json
+        module = self.module()
+        config = dict(certbot='/usr/local/bin/certbot',certbot_config_dir='/var/lib/powerhouse-certbot/config',
+            certbot_work_dir='/var/lib/powerhouse-certbot/work',certbot_logs_dir='/var/lib/powerhouse-certbot/logs')
+        with patch.object(module.Path,'read_text',return_value=json.dumps(config)),patch.object(module.subprocess,'run') as run:
+            module.main()
+        self.assertEqual(run.call_count,3)
+        self.assertIn('/var/lib/powerhouse-certbot/config',run.call_args_list[0].args[0])
+        self.assertEqual(run.call_args_list[1].args[0],['/usr/sbin/nginx','-t'])
+        self.assertEqual(run.call_args_list[2].args[0],['/usr/bin/systemctl','reload','nginx'])
+
+    def test_failed_renewal_does_not_reload_nginx(self):
+        import json
+        module = self.module()
+        config = dict(certbot='/usr/local/bin/certbot',certbot_config_dir='/var/lib/powerhouse-certbot/config',
+            certbot_work_dir='/var/lib/powerhouse-certbot/work',certbot_logs_dir='/var/lib/powerhouse-certbot/logs')
+        with patch.object(module.Path,'read_text',return_value=json.dumps(config)),patch.object(module.subprocess,'run',side_effect=module.subprocess.CalledProcessError(1,'certbot')) as run:
+            with self.assertRaises(module.subprocess.CalledProcessError):module.main()
+        self.assertEqual(run.call_count,1)

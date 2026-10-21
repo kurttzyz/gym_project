@@ -17,7 +17,7 @@ class DatabaseIsolationTests(unittest.TestCase):
             cwd=root,
             env={**os.environ, "PGDATABASE": token, "PGUSER": token,
                  "PGPASSWORD": secrets.token_urlsafe(32)},
-            text=True, capture_output=True, timeout=600,
+            text=True, capture_output=True, timeout=900,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Ran 234 tests", result.stderr)
+        self.assertIn("Ran 246 tests", result.stderr)

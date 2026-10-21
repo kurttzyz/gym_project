@@ -25,6 +25,7 @@ class PaymentOrder(models.Model):
     provider_status = models.IntegerField(null=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     access_note = models.CharField(max_length=300, blank=True)
+    central_collection = models.BooleanField(default=False, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

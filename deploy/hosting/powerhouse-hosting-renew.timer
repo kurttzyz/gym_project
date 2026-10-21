@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew managed Powerhouse gym certificates twice daily
+
+[Timer]
+OnCalendar=*-*-* 03,15:00:00
+RandomizedDelaySec=45m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

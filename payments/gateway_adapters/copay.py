@@ -102,6 +102,9 @@ class CopayConfig:
 
 def config_for_gym(gym):
     """No global merchant fallback: each immutable gym UUID has its own secret entry."""
+    if settings.CENTRAL_COLLECTIONS_ENABLED:
+        from platform_core.collections.gateway import config_for_central_gym
+        return config_for_central_gym(gym, new=True)
     try:
         path = Path(settings.COPAY_CONFIG_FILE)
         entries = json_object(path.read_text())

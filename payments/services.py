@@ -1,4 +1,5 @@
 from uuid import uuid4
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from gym_core.members.models import MemberProfile
@@ -9,10 +10,16 @@ from .gateway_adapters.copay import CopayError, CopayGateway, config_for_gym, mo
 
 
 def gateway_for_order(gym, order):
-    config = config_for_gym(gym)
+    if order.central_collection:
+        from platform_core.collections.gateway import config_for_central_gym, CentralGateway
+        config = config_for_central_gym(gym)
+    else:
+        config = config_for_gym(gym) if not settings.CENTRAL_COLLECTIONS_ENABLED else None
+        if config is None:
+            raise CopayError("This existing payment uses a direct gym merchant. Restore direct mode to reconcile it.")
     if (config.merchant_code, config.environment) != (order.merchant_code, order.environment):
         raise CopayError("This payment belongs to a different COPAY merchant configuration. Contact the platform administrator.")
-    return CopayGateway(config)
+    return CentralGateway(config, gym) if order.central_collection else CopayGateway(config)
 
 
 def create_order(alias, gym, subscription_id):
@@ -30,6 +37,7 @@ def create_order(alias, gym, subscription_id):
             subscription=subscription, merchant_reference="G" + uuid4().hex,
             merchant_code=config.merchant_code, environment=config.environment,
             payment_method=config.payment_method, amount=money(subscription.price),
+            central_collection=settings.CENTRAL_COLLECTIONS_ENABLED,
         )
 
 
@@ -47,6 +55,8 @@ def start_checkout(alias, gym, order_id, client_ip):
             raise CopayError("This payment cannot start another checkout.")
         if not member.is_active or subscription.status != "pending" or subscription.expires_on <= timezone.localdate():
             raise CopayError("This membership cannot accept a new checkout.")
+        if order.central_collection and order.environment == "production" and not settings.CENTRAL_COLLECTIONS_PRODUCTION_APPROVED:
+            raise CopayError("Central production checkout is disabled pending COPAY approval.")
         order.status = "submitting"
         order.save(update_fields=["status"])
     # Persist the attempt before network I/O. On timeout use Recheck status.
@@ -72,6 +82,14 @@ def start_checkout(alias, gym, order_id, client_ip):
 def reconcile(alias, gym, order_id):
     order = PaymentOrder.objects.get(pk=order_id)
     gateway = gateway_for_order(gym, order)
+    if order.central_collection:
+        from platform_core.collections.gateway import register_collection, reconcile_collection
+        # No provider query before a durable submit attempt exists.
+        if order.status == "created":
+            raise CopayError("Checkout has not been submitted.")
+        collection = register_collection(gym, order)
+        reconcile_collection(collection.pk)
+        return PaymentOrder.objects.get(pk=order.pk)
     result = gateway.requery(order)
     return apply_result(alias, order.pk, result)
 
@@ -124,6 +142,8 @@ def apply_result(alias, order_id, result):
 
 
 def process_callback(alias, gym, body):
+    if settings.CENTRAL_COLLECTIONS_ENABLED:
+        raise CopayError("Central collections use the platform callback endpoint.")
     config = config_for_gym(gym)
     data = CopayGateway(config).verified_callback(body)
     reference = data.get("MerchantTransactionId")

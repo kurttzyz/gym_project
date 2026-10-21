@@ -42,3 +42,6 @@ Thumbs.db
 # Local Celery scheduler state
 celerybeat-schedule*
 celerybeat.pid
+
+# Central merchant credentials
+central-copay.secrets.json
