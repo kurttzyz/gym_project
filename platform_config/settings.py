@@ -218,3 +218,6 @@ CELERY_BEAT_SCHEDULE["central-collection-sync"] = {"task": "platform_core.collec
 
 # Enable only when loopback-only Gunicorn is behind Nginx overwriting X-Real-IP.
 COPAY_TRUST_LOOPBACK_PROXY = os.environ.get("COPAY_TRUST_LOOPBACK_PROXY", "false").lower() == "true"
+
+# Compatibility for existing registered central merchant/provider RSA keys only.
+CENTRAL_COPAY_ALLOW_LEGACY_1024 = os.environ.get("CENTRAL_COPAY_ALLOW_LEGACY_1024", "false").lower() == "true"

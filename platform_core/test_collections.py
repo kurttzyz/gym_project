@@ -33,6 +33,37 @@ class CentralConfigurationTests(SimpleTestCase):
         path=root/'central.json';path.write_text(json.dumps(data))
         return path
 
+    def test_legacy_keys_require_explicit_central_opt_in_and_keep_signature_checks(self):
+        from payments.gateway_adapters.copay import CopayGateway, CopayError, load_key
+        import base64
+        legacy = rsa.generate_private_key(public_exponent=65537,key_size=1024)
+        with tempfile.TemporaryDirectory() as directory, patch.object(self,'private',legacy):
+            path = self.config_file(Path(directory))
+            with override_settings(CENTRAL_COPAY_CONFIG_FILE=str(path),CENTRAL_COPAY_ALLOW_LEGACY_1024=False):
+                with self.assertRaises(CopayConfigurationError):gateway.central_config()
+            with override_settings(CENTRAL_COPAY_CONFIG_FILE=str(path),CENTRAL_COPAY_ALLOW_LEGACY_1024=True):
+                config = gateway.central_config()
+                self.assertEqual(config.private_key.key_size,1024)
+                self.assertEqual(config.public_key.key_size,1024)
+                # Shared/direct key loader stays strict even when central mode opts in.
+                with self.assertRaises(CopayConfigurationError):load_key(path.parent.joinpath('private.pem').read_bytes(),private=True)
+                with self.assertRaises(CopayConfigurationError):load_key(path.parent.joinpath('public.pem').read_bytes())
+                client = CopayGateway(config)
+                envelope = client.envelope({'MerchantCode':config.merchant_code,'MerchantTransactionId':'LEGACY-TEST'})
+                envelope['MerchantTransactionId'] = 'LEGACY-TEST'
+                self.assertEqual(client.verified_callback(json.dumps(envelope))['MerchantTransactionId'],'LEGACY-TEST')
+                envelope['Signature'] = base64.b64encode(b'invalid signature').decode()
+                with self.assertRaises(CopayError):client.verified_callback(json.dumps(envelope))
+
+    def test_legacy_flag_does_not_accept_non_rsa_keys(self):
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from payments.gateway_adapters.copay import load_key
+        key=ed25519.Ed25519PrivateKey.generate()
+        for private in [True,False]:
+            raw=(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()) if private
+                 else key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
+            with self.assertRaises(CopayConfigurationError):load_key(raw,private=private,allow_legacy_1024=True)
+
     def test_exact_platform_origin_and_key_files(self):
         with tempfile.TemporaryDirectory() as directory:
             path=self.config_file(Path(directory))

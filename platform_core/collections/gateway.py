@@ -40,8 +40,9 @@ def central_config():
         hosts = data.get('cashier_hosts', [])
         if not isinstance(hosts,list) or any(not isinstance(h,str) or any(c in h for c in '/:*\\\r\n') for h in hosts):
             raise ValueError
-        return CopayConfig(data['merchant_code'],data['aes_key'],load_key(key('merchant_private_key_file'),private=True),
-            load_key(key('copay_public_key_file')),environment,data['payment_method'],origin,tuple(hosts))
+        legacy = settings.CENTRAL_COPAY_ALLOW_LEGACY_1024
+        return CopayConfig(data['merchant_code'],data['aes_key'],load_key(key('merchant_private_key_file'),private=True,allow_legacy_1024=legacy),
+            load_key(key('copay_public_key_file'),allow_legacy_1024=legacy),environment,data['payment_method'],origin,tuple(hosts))
     except (OSError,ValueError,KeyError,TypeError,AttributeError,CopayError):
         raise CopayConfigurationError('Central COPAY collections are not configured. Contact the platform administrator.') from None
 

@@ -32,7 +32,7 @@ nano central-copay.secrets.json
 Fill the central sandbox merchant code, COPAY AES key and key-file paths. Save the
 merchant RSA private key and COPAY public key in those paths. Formats and protocol
 requirements are the same as [the existing COPAY adapter](copay.md): RSA >=2048,
-private PKCS#8, public SubjectPublicKeyInfo. Register your merchant public key and
+private PKCS#8, public SubjectPublicKeyInfo. Existing registered 1024-bit RSA keys are supported only with `CENTRAL_COPAY_ALLOW_LEGACY_1024=true` in `.env`. This option applies to both central merchant and COPAY public keys; the default and direct gym merchant minimum remain 2048 bits. It does not disable signature verification, alter the production approval setting, or initiate any payment. Restart the web and worker services after changing it. Register your merchant public key and
 server outbound IP (`162.0.225.31`, confirm actual egress) with COPAY. Never send
 private keys through chat or commit them. Store backups encrypted and restrict
 files to the application service account. PEMs, secrets directory and the central

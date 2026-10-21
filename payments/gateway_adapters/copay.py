@@ -57,7 +57,8 @@ def json_object(value):
         raise CopayError("Invalid COPAY message.") from None
 
 
-def load_key(value, *, private=False):
+def load_key(value, *, private=False, allow_legacy_1024=False):
+    minimum_bits = 1024 if allow_legacy_1024 is True else 2048
     raw = (value.encode() if isinstance(value, str) else value).strip()
     try:
         if raw.startswith(b"-----BEGIN"):
@@ -67,11 +68,11 @@ def load_key(value, *, private=False):
             raw = base64.b64decode(b"".join(raw.split()), validate=True)
             key = (serialization.load_der_private_key(raw, password=None) if private
                    else serialization.load_der_public_key(raw))
-        if not isinstance(key, rsa.RSAPrivateKey if private else rsa.RSAPublicKey) or key.key_size < 2048:
+        if not isinstance(key, rsa.RSAPrivateKey if private else rsa.RSAPublicKey) or key.key_size < minimum_bits:
             raise ValueError
         return key
     except (ValueError, TypeError):
-        raise CopayConfigurationError("COPAY requires valid RSA keys of at least 2048 bits.") from None
+        raise CopayConfigurationError(f"COPAY requires valid RSA keys of at least {minimum_bits} bits.") from None
 
 
 @dataclass(frozen=True)
