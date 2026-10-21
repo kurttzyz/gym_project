@@ -83,7 +83,7 @@ def refuse_existing_site(host, target):
                 raise SetupError('Hostname conflicts with an existing Nginx site. Ask the operator to review it; no existing site was changed.')
 
 
-def config_text(host, tls=False):
+def config_text(host, tls=False, certbot_config_dir='/var/lib/powerhouse-certbot/config'):
     challenge = f'location ^~ /.well-known/acme-challenge/ {{ root {WEBROOT}; }}'
     proxy = '''location /static/ { alias /var/www/powerhouse/static/; }
     location / {
@@ -100,8 +100,8 @@ def config_text(host, tls=False):
     return f'''server {{ listen 80; server_name {host}; {challenge}
         location / {{ return 301 https://{host}$request_uri; }} }}
 server {{ listen 443 ssl; server_name {host};
-    ssl_certificate /etc/letsencrypt/live/{host}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{host}/privkey.pem;
+    ssl_certificate {certbot_config_dir}/live/{host}/fullchain.pem;
+    ssl_certificate_key {certbot_config_dir}/live/{host}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     {proxy}
 }}
@@ -150,13 +150,17 @@ def provision(payload, config):
     target = MANAGED / (hashlib.sha256(host.encode()).hexdigest() + '.conf')
     refuse_existing_site(host, target)
     # Do not downgrade an existing managed HTTPS site on a retry.
-    cert = Path('/etc/letsencrypt/live') / host / 'fullchain.pem'
+    cert = Path(config['certbot_config_dir']) / 'live' / host / 'fullchain.pem'
     if not cert.exists():
         write_config(target, config_text(host))
-    run([config['certbot'], 'certonly', '--webroot', '-w', str(WEBROOT),
+    run([config['certbot'], 'certonly',
+         '--config-dir', config['certbot_config_dir'],
+         '--work-dir', config['certbot_work_dir'],
+         '--logs-dir', config['certbot_logs_dir'],
+         '--webroot', '-w', str(WEBROOT),
          '--cert-name', host, '-d', host, '--non-interactive', '--agree-tos',
          '--email', config['email'], '--keep-until-expiring'], timeout=180)
-    write_config(target, config_text(host, tls=True))
+    write_config(target, config_text(host, tls=True, certbot_config_dir=config['certbot_config_dir']))
     return {'status': 'live', 'message': 'DNS ownership confirmed. Nginx and HTTPS are configured.'}
 
 
