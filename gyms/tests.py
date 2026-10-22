@@ -20,4 +20,4 @@ class DatabaseIsolationTests(unittest.TestCase):
             text=True, capture_output=True, timeout=900,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Ran 268 tests", result.stderr)
+        self.assertIn("Ran 273 tests", result.stderr)

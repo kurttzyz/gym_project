@@ -1,0 +1,7 @@
+{% extends 'gyms/base.html' %}
+{% block content %}
+<span class="eyebrow">Front desk</span><h1>Add member or walk-in</h1>
+<p>Register a visitor using this gym’s published membership plans. For a walk-in visit, select a day-pass plan. A portal login is optional.</p>
+<form method="post" class="card editor">{% csrf_token %}{{ form.as_p }}<button>Register pending membership</button></form>
+<p class="help">A day pass runs from today until the start of tomorrow in the gym’s time zone. Saving does not collect payment, record waiver acceptance or grant entry. The owner verifies offline payment and activates the term, or issues a COPAY payment for verified activation. Staff cannot change prices or activate membership access from this form.</p>
+{% endblock %}

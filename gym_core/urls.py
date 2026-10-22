@@ -19,6 +19,7 @@ from .renewal_billing import views as renewal_billing_views
 from accounts import recovery_views
 
 urlpatterns = [
+    path("desk/members/new/", member_views.register_member, name="front-desk-member-new"),
     path("portal/automatic-renewals/", renewal_billing_views.preferences, name="member-auto-renewals"),
     path("portal/automatic-renewals/stop/", renewal_billing_views.stop, name="member-auto-renewals-stop"),
     path("manage/automatic-renewals/", renewal_billing_views.settings_page, name="owner-auto-renewals"),

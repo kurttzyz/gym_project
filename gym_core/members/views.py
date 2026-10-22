@@ -12,13 +12,36 @@ from django.views.decorators.debug import sensitive_post_parameters
 from django.views.decorators.http import require_POST
 from gyms.databases import ready_database
 from gym_core.memberships.views import owner_page
-from gym_core.memberships.models import MemberSubscription, MembershipApplication
+from gym_core.memberships.models import MemberSubscription, MembershipApplication, MembershipPlan
+from gym_core.attendance.views import attendance_page
 from websites.public_pages.views import public_page
 from .forms import (AssignPlanForm, ExistingMemberAccountForm, MemberAccountForm,
-                    MemberProfileForm, SubscriptionActionForm, waiver_version)
+                    MemberProfileForm, FrontDeskMemberForm, SubscriptionActionForm, waiver_version)
 from .models import MemberInvitation, MemberProfile
 from .services import (EnrollmentError, assign_plan, change_subscription, claim_invitation,
-                       enroll_application, invitation_for_token, issue_invitation)
+                       enroll_application, invitation_for_token, issue_invitation, record_event)
+
+
+@attendance_page
+def register_member(request):
+    form=FrontDeskMemberForm(request.POST if request.method=='POST' else None)
+    if request.method=='POST' and form.is_valid():
+        try:
+            with transaction.atomic(using=ready_database(request.tenant)):
+                member=form.save()
+                term=assign_plan(ready_database(request.tenant),member.pk,form.cleaned_data['plan'].pk,
+                    timezone.localdate(),request.user.pk)
+                kind='Walk-in day pass' if form.cleaned_data['walk_in'] else 'Member registration'
+                record_event(term,request.user.pk,'front_desk_intake',
+                    kind+' at front desk. Pending owner/payment verification; no payment recorded or entry granted.')
+        except IntegrityError:
+            form.add_error(None,'A member with these details may already exist. Ask the owner to review the member record.')
+        except (EnrollmentError,MembershipPlan.DoesNotExist):
+            form.add_error(None,'This plan is no longer available. Reload and choose a current plan.')
+        else:
+            messages.success(request,f'{member.full_name} registered ({member.member_number}). Membership is pending. Ask the owner to verify payment and activate it before check-in.')
+            return redirect('front-desk-member-new')
+    return render(request,'members/front_desk_new.html',{'form':form})
 
 
 @owner_page

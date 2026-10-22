@@ -31,6 +31,25 @@ class MemberProfileForm(forms.ModelForm):
         return data
 
 
+class FrontDeskMemberForm(MemberProfileForm):
+    walk_in = forms.BooleanField(required=False,label="Walk-in / day pass")
+    plan = forms.ModelChoiceField(queryset=MembershipPlan.objects.none(),label="Membership plan")
+
+    class Meta(MemberProfileForm.Meta):
+        fields = tuple(field for field in MemberProfileForm.Meta.fields if field != "is_active")
+
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.fields['plan'].queryset=MembershipPlan.objects.filter(is_active=True)
+        self.fields['plan'].label_from_instance=lambda plan: f'{plan.name} — PHP {plan.price:.2f} / {plan.get_period_display()}'
+
+    def clean(self):
+        data=super().clean()
+        if data.get('walk_in') and data.get('plan') and data['plan'].period != 'day':
+            self.add_error('plan','Choose a day-pass plan for a walk-in visitor.')
+        return data
+
+
 class AssignPlanForm(forms.Form):
     plan = forms.ModelChoiceField(queryset=MembershipPlan.objects.none())
     starts_on = forms.DateField(initial=timezone.localdate, widget=forms.DateInput(attrs={"type": "date"}))

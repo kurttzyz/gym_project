@@ -440,3 +440,27 @@ Your platform administrator configures the dashboard link for your gym. With
 per-gym merchant mode enabled, this page does not request a payout from Powerhouse
 or show the legacy Powerhouse ledger as your COPAY balance. Member payment
 records remain available at `/manage/payments/`.
+
+### Staff registration and walk-in visitors
+
+Owners, managers and active staff can open **Add member / walk-in** at
+`/desk/members/new/`, also linked from the front-desk scanner. Enter the visitor's
+real name, email and phone, plus optional birth/emergency details. Select a
+published plan. Tick **Walk-in / day pass** for a walk-in and select a day-period
+plan created by the owner; monthly/quarterly/yearly plans are rejected for that
+option. Existing profiles should be handled by the owner; duplicate emails cannot
+create a second profile or overwrite existing member information.
+
+Registration creates a gym-local profile and a pending term with a price snapshot
+and the staff operator in its event history. It does not create a portal account,
+accept a waiver for the visitor, collect cash/COPAY, or grant entry. Staff cannot
+change prices, edit existing profiles or activate memberships through this form.
+The owner reviews the member, verifies any offline payment and activates the term
+with its receipt/reference, or issues a COPAY payment. An offline activation is
+access approval, not a COPAY payment receipt. The owner can print the QR card for
+a visitor without a portal login; staff then scan it normally at the front desk.
+
+Day passes are calendar-day access in the gym's configured time zone: today until
+the start of tomorrow, not a rolling 24 hours. Expired, unpaid/pending, frozen or
+disabled memberships cannot check in. Regular memberships use their selected
+plan period. Both profiles and intake audit stay in that gym's own database.

@@ -43,7 +43,7 @@ def workspace_navigation(request,role,modules):
     if role in {'manager','staff'}:
         operations=[]
         if modules.get('attendance'):operations.extend([item('attendance-scanner','Front desk','scan'),item('attendance-history','Attendance','activity')])
-        if modules.get('memberships'):operations.append(item('class-schedule','Class schedule','calendar','class-roster'))
+        if modules.get('memberships'):operations.extend([item('front-desk-member-new','Add member / walk-in','users'),item('class-schedule','Class schedule','calendar','class-roster')])
         if modules.get('pos'):operations.extend([item('pos-checkout','Point of sale','bag'),item('pos-sales','My sales & receipts','receipt','pos-receipt')])
         group('Gym operations',operations)
         return groups,'Staff workspace',groups[0]['links'][0]['url'] if groups else reverse('dashboard')

@@ -3867,6 +3867,88 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertFalse(PaymentOrder.objects.using(self.alias_a).exists())
 
 
+    def front_desk_payload(self,plan,**updates):
+        data={'full_name':'Front desk visitor','email':uuid4().hex+'@example.com','phone':'09123456789','plan':str(plan.pk)}
+        data.update(updates)
+        return data
+
+    def test_front_desk_staff_and_manager_register_pending_members_with_audit(self):
+        plan=self.plan()
+        for role in ['staff','manager']:
+            account=self.desk_account(role)
+            client=self.member_client_for(account)
+            payload=self.front_desk_payload(plan,user_id=str(self.user.pk),price='0.01',status='active',is_active='',waiver_text='Forged')
+            response=client.post('/desk/members/new/',payload)
+            self.assertEqual(response.status_code,302)
+            with gym_database(self.alias_a):
+                member=MemberProfile.objects.get(email=payload['email'])
+                term=MemberSubscription.objects.get(member=member)
+                self.assertIsNone(member.user_id);self.assertEqual(member.waiver_text,'')
+                self.assertEqual(term.price,plan.price);self.assertEqual(term.status,'pending')
+                event=MembershipEvent.objects.get(subscription=term,action='front_desk_intake')
+                self.assertEqual(event.actor_id,account.pk)
+            self.assertEqual(client.get(f'/manage/members/{member.pk}/edit/').status_code,404)
+            self.assertEqual(client.post(f'/manage/members/{member.pk}/subscriptions/{term.pk}/action/',{'action':'activate','note':'Not allowed'}).status_code,404)
+        self.assertFalse(PaymentOrder.objects.using(self.alias_a).exists())
+        self.assertFalse(MemberProfile.objects.using(self.alias_b).exists())
+
+    def test_front_desk_walkin_day_pass_requires_no_portal_account(self):
+        plan=self.plan(period='day',price=Decimal('200.00'))
+        account=self.desk_account()
+        response=self.member_client_for(account).post('/desk/members/new/',self.front_desk_payload(plan,walk_in='on'))
+        self.assertEqual(response.status_code,302)
+        with gym_database(self.alias_a):
+            member=MemberProfile.objects.get()
+            term=MemberSubscription.objects.get(member=member)
+            self.assertIsNone(member.user_id)
+            self.assertEqual(term.starts_on,timezone.localdate())
+            self.assertEqual(term.expires_on,timezone.localdate()+timedelta(days=1))
+            self.assertEqual(term.status,'pending')
+            self.assertIn('Walk-in day pass',MembershipEvent.objects.get(action='front_desk_intake').note)
+        self.assertEqual(self.tenant_client().get(f'/manage/members/{member.pk}/').status_code,200)
+        staff=self.member_client_for(account)
+        code=card_code(self.a,member)
+        self.assertContainsText(self.scan_card(code,client=staff),'No active membership')
+        self.assertEqual(self.membership_action(member,term,'activate',note='Cash day-pass receipt verified by owner').status_code,302)
+        self.assertContainsText(self.scan_card(code,client=staff),'Entry allowed')
+        self.assertContainsText(self.scan_card(code,action='checkout',client=staff),'Checked out successfully')
+        with patch('django.utils.timezone.localdate',return_value=term.expires_on):
+            self.assertContainsText(self.scan_card(code,client=staff),'No active membership')
+
+    def test_front_desk_rejects_hidden_foreign_and_non_day_walkin_plans(self):
+        client=self.member_client_for(self.desk_account())
+        hidden=self.plan(is_active=False)
+        foreign=self.plan(alias=self.alias_b)
+        monthly=self.plan()
+        for plan in [hidden,foreign,monthly]:
+            response=client.post('/desk/members/new/',self.front_desk_payload(plan,walk_in='on'))
+            self.assertEqual(response.status_code,200)
+            self.assertFalse(MemberProfile.objects.using(self.alias_a).exists())
+
+    def test_front_desk_permissions_csrf_disabled_access_and_saas(self):
+        plan=self.plan()
+        member=self.desk_account('member')
+        self.assertEqual(self.member_client_for(member).get('/desk/members/new/').status_code,404)
+        staff=self.desk_account()
+        client=self.member_client_for(staff,csrf=True)
+        self.assertEqual(client.get('/desk/members/new/').status_code,200)
+        self.assertEqual(client.post('/desk/members/new/',self.front_desk_payload(plan)).status_code,403)
+        self.assertEqual(self.member_client_for(staff,self.domain_b).get('/desk/members/new/').status_code,404)
+        Membership.objects.filter(user=staff,organization=self.a).update(is_active=False)
+        self.assertEqual(self.member_client_for(staff).get('/desk/members/new/').status_code,404)
+        self.saas_assignment(plan=self.saas_plan(memberships=False),trial=14)
+        self.assertEqual(self.tenant_client().get('/desk/members/new/').status_code,503)
+
+    def test_front_desk_duplicate_registration_does_not_duplicate_member_or_term(self):
+        plan=self.plan()
+        client=self.member_client_for(self.desk_account())
+        payload=self.front_desk_payload(plan)
+        self.assertEqual(client.post('/desk/members/new/',payload).status_code,302)
+        self.assertEqual(client.post('/desk/members/new/',payload).status_code,200)
+        self.assertEqual(MemberProfile.objects.using(self.alias_a).count(),1)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).count(),1)
+
+
 if __name__ == "__main__":
     try:
         with override_settings(ALLOWED_HOSTS=["*"], PLATFORM_HOSTS=["localhost", "testserver"]):
