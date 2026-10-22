@@ -1,0 +1,16 @@
+{% extends 'gyms/base.html' %}
+{% block content %}
+<h1>Wallet &amp; withdrawals</h1>
+<section class="card">
+  <h2>Your COPAY wallet</h2>
+  <p>Your gym receives and manages funds through its own COPAY merchant account.</p>
+  <p>View your available balance, manage payout destinations and withdraw funds directly in your COPAY merchant dashboard.</p>
+  {% if merchant_portal_url %}
+  <p><a class="button" href="{{ merchant_portal_url }}" target="_blank" rel="noopener noreferrer">Withdraw in COPAY ↗</a></p>
+  <p class="help">Sign in with your gym’s merchant account. COPAY shows your live balance and withdrawal status.</p>
+  {% else %}
+  <p>Sign in to your COPAY merchant dashboard to withdraw. Ask your platform administrator to add your merchant dashboard link here.</p>
+  {% endif %}
+</section>
+<p><a href="{% url 'owner-payments' %}">View member payments</a></p>
+{% endblock %}

@@ -124,3 +124,29 @@ class CopayProtocolTests(unittest.TestCase):
             self.assertNotIn('private',output)
             self.assertIn('operation=deposit_submit',output)
             opener.open.assert_called_once()
+
+
+class MerchantWalletLinkTests(unittest.TestCase):
+    def test_links_are_per_gym_https_and_fail_closed_without_gateway_calls(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from uuid import uuid4
+        from django.test import override_settings
+        from .gateway_adapters.copay import merchant_portal_for_gym
+        gym=SimpleNamespace(database_key=uuid4())
+        other=SimpleNamespace(database_key=uuid4())
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'test-config.json'
+            with override_settings(COPAY_CONFIG_FILE=str(path)),patch.object(CopayGateway,'request') as provider:
+                for value in ['https://merchant.example.com/wallet','http://merchant.example.com',
+                        'javascript:alert(1)','https://user:password@merchant.example.com',
+                        'https://merchant.example.com:8443','https://merchant.example.com/\nunsafe',None]:
+                    path.write_text(json.dumps({str(gym.database_key):{'merchant_portal_url':value}}))
+                    self.assertEqual(merchant_portal_for_gym(gym),value if value=='https://merchant.example.com/wallet' else '')
+                    self.assertEqual(merchant_portal_for_gym(other),'')
+                path.write_text('invalid-json')
+                self.assertEqual(merchant_portal_for_gym(gym),'')
+                path.unlink()
+                self.assertEqual(merchant_portal_for_gym(gym),'')
+                provider.assert_not_called()

@@ -168,3 +168,21 @@ A reachable unauthenticated GET does not prove that a signed POST is accepted;
 HTTP 401/403 may require checking merchant credentials, IP allowlisting or provider
 edge rules with COPAY. Do not automatically retry SubmitDeposit for an unknown
 outcome. Recheck uses GetDepositDetail and does not submit another payment.
+
+
+## Owner wallet and direct withdrawals
+
+With `CENTRAL_COLLECTIONS_ENABLED=false`, `/manage/wallet/` shows the gym's own
+COPAY wallet access instead of the optional Powerhouse custody ledger. Add
+`"merchant_portal_url": "https://YOUR-COPAY-MERCHANT-DASHBOARD"` to that gym's
+UUID entry in `COPAY_CONFIG_FILE`, using the actual HTTPS dashboard URL supplied
+by COPAY. The **Withdraw in COPAY** button opens that page in a separate tab;
+owners sign in with their own merchant account. Leave the field blank until the
+real URL is confirmed. Invalid or missing links show setup guidance.
+
+Live balances, payout destinations, transfers and withdrawal status are managed
+inside COPAY. This link does not submit a payout API request or share a merchant
+login. Direct-mode POSTs cannot create new Powerhouse withdrawal requests or
+payout destinations. Historical central ledger/withdrawal records are preserved
+for platform reconciliation. The previous manual central workflow remains only
+when central collections mode is explicitly enabled.

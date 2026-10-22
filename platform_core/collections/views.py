@@ -15,7 +15,7 @@ from django.views.decorators.http import require_POST
 from gym_core.permissions import owner_required
 from platform_core.views import platform_required
 from platform_core.models import GymWallet, WalletEntry, CentralCollection, PayoutDestination, GymWithdrawal
-from payments.gateway_adapters.copay import CopayError, CopayConfigurationError
+from payments.gateway_adapters.copay import CopayError, CopayConfigurationError, merchant_portal_for_gym
 from . import ledger, gateway
 
 
@@ -46,6 +46,10 @@ def environment(request):
 @never_cache
 def owner_wallet(request):
     request.platform_billing_only = True
+    if not settings.CENTRAL_COLLECTIONS_ENABLED:
+        if request.method == 'POST':
+            return HttpResponse('Manage withdrawals in your own COPAY merchant wallet.',status=403)
+        return render(request,'collections/owner_direct.html',{'merchant_portal_url':merchant_portal_for_gym(request.tenant)})
     env = environment(request)
     wallet = ledger.wallet_for(request.tenant,env)
     form = WithdrawalForm(request.POST if request.method == 'POST' else None,gym=request.tenant)
@@ -70,6 +74,8 @@ def owner_wallet(request):
 @owner_required
 @require_POST
 def add_destination(request):
+    if not settings.CENTRAL_COLLECTIONS_ENABLED:
+        return HttpResponse('Manage payout destinations in your own COPAY merchant wallet.',status=403)
     form = DestinationForm(request.POST)
     if form.is_valid():
         PayoutDestination.objects.create(organization=request.tenant,created_by=request.user,**form.cleaned_data)

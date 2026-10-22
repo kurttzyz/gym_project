@@ -7,6 +7,7 @@
     "copay_public_key_file": "secrets/gym-a-copay-public.pem",
     "public_origin": "https://gym-a.example.com",
     "payment_method": "GCQR0",
-    "cashier_hosts": []
+    "cashier_hosts": [],
+    "merchant_portal_url": ""
   }
 }

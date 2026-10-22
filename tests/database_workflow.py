@@ -2008,6 +2008,27 @@ class GymDatabaseTests(unittest.TestCase):
             ledger.adjust(wallet.pk,"available","-101",self.user.pk,uuid4().hex,"Invalid refund")
         wallet.refresh_from_db();self.assertEqual(wallet.available,100)
 
+    @override_settings(CENTRAL_COLLECTIONS_ENABLED=False)
+    def test_direct_owner_wallet_uses_own_portal_without_central_mutations(self):
+        from platform_core.models import GymWallet,GymWithdrawal,PayoutDestination
+        with patch('platform_core.collections.views.merchant_portal_for_gym',return_value='https://merchant.example.com/wallet'):
+            response=self.tenant_client().get('/manage/wallet/')
+        self.assertContainsText(response,'https://merchant.example.com/wallet')
+        self.assertContainsText(response,'Withdraw in COPAY')
+        self.assertNotIn(b'Collections held by Powerhouse',response.content)
+        self.assertNotIn(b'Reserve funds',response.content)
+        self.assertFalse(GymWallet.objects.filter(organization=self.a).exists())
+        self.assertEqual(self.tenant_client().post('/manage/wallet/',{'amount':'10'}).status_code,403)
+        self.assertEqual(self.tenant_client().post('/manage/wallet/destinations/',{'bank':'Test','account_name':'Owner','account_number':'123'}).status_code,403)
+        self.assertFalse(GymWithdrawal.objects.filter(wallet__organization=self.a).exists())
+        self.assertFalse(PayoutDestination.objects.filter(organization=self.a).exists())
+        staff=self.member_client_for(self.desk_account())
+        self.assertEqual(staff.get('/manage/wallet/').status_code,404)
+        self.assertEqual(self.tenant_client(self.domain_b).get('/manage/wallet/').status_code,404)
+        with patch('platform_core.collections.views.merchant_portal_for_gym',return_value=''):
+            self.assertContainsText(self.tenant_client().get('/manage/wallet/'),'Ask your platform administrator')
+
+    @override_settings(CENTRAL_COLLECTIONS_ENABLED=True)
     def test_central_owner_wallet_isolated_and_role_post_csrf_enforced(self):
         from platform_core.collections import ledger
         wallet=ledger.wallet_for(self.a,"sandbox")

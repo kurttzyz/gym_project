@@ -431,3 +431,12 @@ The worker generates invoices and optional reminders; the member approves every
 one-time COPAY checkout. A verified production payment schedules or activates
 the next eligible membership. Each gym uses its own merchant account.
 See the [complete automatic renewal flow and upgrade guide](automatic-renewals.md).
+
+### Wallet and withdrawals with your own merchant account
+
+Open `/manage/wallet/` and choose **Withdraw in COPAY**. Sign in to your gym's
+COPAY merchant dashboard to view the live wallet balance and manage withdrawals.
+Your platform administrator configures the dashboard link for your gym. With
+per-gym merchant mode enabled, this page does not request a payout from Powerhouse
+or show the legacy Powerhouse ledger as your COPAY balance. Member payment
+records remain available at `/manage/payments/`.

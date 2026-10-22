@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives import hashes, padding, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as rsa_padding, rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
 
 
 class CopayError(Exception):
@@ -102,6 +104,22 @@ class CopayConfig:
         except ValueError:
             raise CopayError("COPAY returned an unapproved checkout URL.") from None
         return value
+
+
+def merchant_portal_for_gym(gym):
+    """Operator-configured external wallet link; never a payout or balance API."""
+    try:
+        data = json_object(Path(settings.COPAY_CONFIG_FILE).read_text())[str(gym.database_key)]
+        value = data.get("merchant_portal_url", "")
+        if not isinstance(value, str) or len(value) > 2000 or any(c in value for c in "\r\n\\"):
+            return ""
+        URLValidator(schemes=["https"])(value)
+        parsed = urlsplit(value)
+        if parsed.username or parsed.password or parsed.port not in (None, 443):
+            return ""
+        return value
+    except (OSError, KeyError, ValueError, TypeError, AttributeError, ValidationError, CopayError):
+        return ""
 
 
 def config_for_gym(gym):
