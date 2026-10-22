@@ -23,6 +23,7 @@ from gym_core.memberships.models import MembershipPlan, MemberSubscription
 from gym_core.members.models import MemberProfile
 from payments.models import PaymentOrder
 from gym_core.self_service.models import RenewalRequest, MemberProfileChange
+from gym_core.renewal_billing.models import RenewalBillingSettings
 from gym_core.notifications.models import NotificationSettings, EmailNotification, EmailAttempt
 from gym_core.classes.models import Trainer, ClassSession, ClassBooking, BookingEvent
 from pos.models import Product, StockBalance, StockMovement, Sale, SaleRefund
@@ -124,6 +125,7 @@ def gym_detail_context(request, gym, domain_form=None):
             ContactMessage.objects.exists()
             RenewalRequest.objects.first()
             MemberProfileChange.objects.first()
+            RenewalBillingSettings.objects.first()
             NotificationSettings.objects.first()
             EmailNotification.objects.first()
             EmailAttempt.objects.first()

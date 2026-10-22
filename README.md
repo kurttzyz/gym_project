@@ -256,3 +256,12 @@ Optional central COPAY collection mode records member payments in separate gym/e
 ### Owner and member operating guide
 
 The [owner/member manual](docs/owner-member-manual.md) lists current features, page paths, action-by-action instructions and onboarding/daily/renewal/payment flows. Its primary payment model is each gym's own COPAY merchant account, with a separate operator appendix for switching from optional central collections without losing historical records.
+
+### Automatic membership invoices
+
+Owners enable `/manage/automatic-renewals/`; members opt in at
+`/portal/automatic-renewals/`. The existing worker prepares the next invoice and
+7/1/0-day reminders. Each member approves a separate one-time COPAY payment into
+the gym's own merchant account; verified payment schedules or activates the next
+term under the agreed late-payment policy. No recurring debit is attempted.
+See [setup, consent, payment flows and upgrade instructions](docs/automatic-renewals.md).

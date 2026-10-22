@@ -39,6 +39,9 @@ def process_gym_notifications(database_key):
         access = access_for_gym(gym)
         alias = ready_database(gym)
         if access.allowed and access.modules.get('memberships',False):
+            if access.modules.get('payments',False):
+                from gym_core.renewal_billing.services import sweep_invoices
+                sweep_invoices(alias,gym)
             queue_reminders(alias)
         deliver_batch(gym,alias,limit=25)
         NotificationSettings.objects.using(alias).filter(pk=1).update(last_worker_check=timezone.now())

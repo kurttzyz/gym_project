@@ -19,6 +19,8 @@ def on_payment_event(sender, instance, using, raw=False, **kwargs):
     if not raw and using.startswith('gym_'):
         with gym_database(using):
             payment_event(using, instance)
+            from gym_core.renewal_billing.services import sync_invoice_status
+            sync_invoice_status(using,instance)
 
 
 @receiver(post_save, sender=MembershipApplication, dispatch_uid='notifications.application_event')

@@ -22,7 +22,7 @@ def workspace_navigation(request,role,modules):
         group('Workspace',[item('owner-dashboard','Overview','grid')])
         if modules.get('memberships'):
             group('Membership',[item('owner-members','Members','users','member-new','member-detail','member-edit'),
-                item('owner-plans','Membership plans','card','owner-plan-new','owner-plan-edit'),
+                item('owner-auto-renewals','Renewal invoicing','refresh'),item('owner-plans','Membership plans','card','owner-plan-new','owner-plan-edit'),
                 item('owner-applications','Applications','clipboard'),item('owner-renewals','Renewal requests','refresh')])
         operations=[]
         if modules.get('attendance'):operations.append(item('attendance-scanner','Front desk','scan'))
@@ -48,7 +48,7 @@ def workspace_navigation(request,role,modules):
         group('Gym operations',operations)
         return groups,'Staff workspace',groups[0]['links'][0]['url'] if groups else reverse('dashboard')
     links=[item('dashboard','Overview','grid')]
-    if modules.get('memberships'):links.extend([item('member-classes','Classes & bookings','calendar'),item('member-renewals','Renew membership','refresh')])
+    if modules.get('memberships'):links.extend([item('member-classes','Classes & bookings','calendar'),item('member-renewals','Renew membership','refresh'),item('member-auto-renewals','Renewal invoices','receipt')])
     if modules.get('attendance'):links.extend([item('member-card','My member card','scan'),item('member-attendance','My attendance','activity')])
     links.append(item('member-payments','Payment history','wallet','payment-detail','payment-receipt'))
     group('My gym',links)

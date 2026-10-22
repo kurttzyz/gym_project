@@ -53,6 +53,9 @@ def start_checkout(alias, gym, order_id, client_ip):
             return order
         if order.status != "created":
             raise CopayError("This payment cannot start another checkout.")
+        from gym_core.renewal_billing.services import prepare_term
+        try:prepare_term(alias,subscription,order,gym=gym)
+        except EnrollmentError as error:raise CopayError(str(error)) from None
         if not member.is_active or subscription.status != "pending" or subscription.expires_on <= timezone.localdate():
             raise CopayError("This membership cannot accept a new checkout.")
         if order.central_collection and order.environment == "production" and not settings.CENTRAL_COLLECTIONS_PRODUCTION_APPROVED:
@@ -127,6 +130,8 @@ def apply_result(alias, order_id, result):
                 order.save()
                 return order
             try:
+                from gym_core.renewal_billing.services import prepare_term
+                prepare_term(alias,subscription,order,confirmed=True)
                 change_subscription(alias, subscription.member_id, subscription.pk, "activate",
                                     f"Automatically activated after verified COPAY payment {order.merchant_reference}.", None)
             except EnrollmentError:

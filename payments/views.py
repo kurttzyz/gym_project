@@ -71,7 +71,9 @@ def issue(request, subscription_id):
 @payment_page
 def detail(request, order_id):
     order = authorized_order(request, order_id)
-    return render(request, "payments/detail.html", {"order": order, "owner": request.payment_owner})
+    from gym_core.renewal_billing.models import RenewalInvoice
+    invoice=RenewalInvoice.objects.filter(subscription_id=order.subscription_id).first()
+    return render(request, "payments/detail.html", {"order": order, "owner": request.payment_owner,"renewal_invoice":invoice})
 
 
 @payment_page

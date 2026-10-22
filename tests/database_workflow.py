@@ -1034,6 +1034,7 @@ class GymDatabaseTests(unittest.TestCase):
 
 
     def test_old_gym_installs_membership_module_from_setup_button_without_losing_branding(self):
+        self.remove_auto_renewal_schema()
         from django.db.migrations.recorder import MigrationRecorder
         WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title="Keep existing brand")
         with connections[self.alias_a].schema_editor() as editor:
@@ -1822,6 +1823,7 @@ class GymDatabaseTests(unittest.TestCase):
             self.assertIn(table,connections[self.alias_b].introspection.table_names())
 
     def test_attendance_upgrade_button_adds_module_without_losing_members(self):
+        self.remove_auto_renewal_schema()
         from django.db.migrations.recorder import MigrationRecorder
         member,subscription,code=self.active_card()
         with connections[self.alias_a].schema_editor() as editor:
@@ -2859,6 +2861,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertEqual(session.cancellation_reason,'Holiday closure')
 
     def test_classes_upgrade_button_installs_tables_and_preserves_members(self):
+        self.remove_auto_renewal_schema()
         from django.db.migrations.recorder import MigrationRecorder
         member,term,code = self.active_card()
         with connections[self.alias_a].schema_editor() as editor:
@@ -3145,6 +3148,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertIsNotNone(NotificationSettings.objects.using(self.alias_a).get().last_worker_check)
 
     def test_notifications_upgrade_button_preserves_classes_and_members(self):
+        self.remove_auto_renewal_schema()
         from django.db.migrations.recorder import MigrationRecorder
         user,member,session = self.class_fixture()
         with connections[self.alias_a].schema_editor() as editor:
@@ -3414,6 +3418,7 @@ class GymDatabaseTests(unittest.TestCase):
         self.assertEqual(client.get('/accounts/password-reset/').status_code,200)
 
     def test_self_service_upgrade_preserves_class_and_member_records(self):
+        self.remove_auto_renewal_schema()
         from django.db.migrations.recorder import MigrationRecorder
         user,member,session=self.class_fixture()
         NotificationSettings.objects.using(self.alias_a).create(pk=1)
@@ -3542,6 +3547,285 @@ class GymDatabaseTests(unittest.TestCase):
         response=self.client.get('/',{'q':self.a.slug,'status':'ready'})
         self.assertNotIn(f'<strong>{self.a.name}</strong>'.encode(),response.content)
         self.assertContainsText(response,'No gyms match this view')
+
+    def remove_auto_renewal_schema(self):
+        # Emulate pre-0008 gyms without leaving a recorded dependent migration.
+        from django.db.migrations.recorder import MigrationRecorder
+        from gym_core.renewal_billing.models import (RenewalInvoice,RenewalPreference,RenewalConsentEvent,RenewalBillingSettings)
+        with connections[self.alias_a].schema_editor() as editor:
+            for model in (RenewalInvoice,RenewalPreference,RenewalConsentEvent,RenewalBillingSettings):
+                editor.delete_model(model)
+        MigrationRecorder.Migration.objects.using(self.alias_a).filter(app='gym_core',name__startswith='0008_').delete()
+
+    def test_auto_renewal_upgrade_button_preserves_terms_and_branding(self):
+        from gym_core.renewal_billing.models import RenewalBillingSettings
+        user,member,base,config=self.auto_renewal_fixture()
+        self.remove_auto_renewal_schema()
+        WebsiteSettings.objects.using(self.alias_a).filter(pk=1).update(hero_title='Keep renewal brand')
+        self.make_platform_admin()
+        self.assertContainsText(self.client.get(f'/gyms/{self.a.slug}/'),'Retry setup')
+        self.assertEqual(self.client.post(f'/gyms/{self.a.slug}/retry-setup/').status_code,302)
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).get(pk=base.pk).status,'active')
+        self.assertEqual(WebsiteSettings.objects.using(self.alias_a).get(pk=1).hero_title,'Keep renewal brand')
+        self.assertFalse(RenewalBillingSettings.objects.using(self.alias_a).exists())
+
+    def auto_renewal_fixture(self, policy='restart', days=7, environment='production'):
+        from gym_core.renewal_billing.models import RenewalBillingSettings
+        from gym_core.renewal_billing.services import opt_in,plan_quote
+        user=self.desk_account('member')
+        today=timezone.localdate()
+        with gym_database(self.alias_a):
+            member=MemberProfile.objects.create(user_id=user.pk,full_name='Renewal member',email='renew-'+uuid4().hex+'@example.com',phone='09123456789')
+            plan=MembershipPlan.objects.create(name='Monthly renewal',price=Decimal('1000.00'),period='month')
+            term=MemberSubscription.objects.create(member=member,plan=plan,plan_name=plan.name,price=plan.price,period=plan.period,
+                status='active',starts_on=today-timedelta(days=30),expires_on=today+timedelta(days=days))
+            RenewalBillingSettings.objects.create(pk=1,enabled=True,late_policy=policy)
+            opt_in(self.alias_a,self.a,member.pk,user.pk,plan_quote(plan,policy))
+        return user,member,term,self.copay_config(environment)
+
+    def auto_invoice(self, member, config):
+        from gym_core.renewal_billing.services import generate_invoice
+        with patch('payments.services.config_for_gym',return_value=config):
+            return generate_invoice(self.alias_a,self.a,member.pk)
+
+    def test_auto_renewal_invoice_idempotent_no_network_or_access(self):
+        from gym_core.renewal_billing.models import RenewalInvoice,RenewalConsentEvent
+        user,member,base,config=self.auto_renewal_fixture()
+        with patch.object(CopayGateway,'submit') as submit:
+            invoice=self.auto_invoice(member,config)
+            again=self.auto_invoice(member,config)
+        submit.assert_not_called();self.assertEqual(invoice.pk,again.pk)
+        with gym_database(self.alias_a):
+            self.assertEqual(RenewalInvoice.objects.count(),1)
+            order=PaymentOrder.objects.get(subscription_id=invoice.subscription_id)
+            self.assertEqual(order.status,'created');self.assertFalse(order.central_collection)
+            self.assertEqual(order.amount,Decimal('1000.00'))
+            self.assertEqual(invoice.subscription.status,'pending')
+            self.assertEqual(invoice.subscription.starts_on,base.expires_on)
+            self.assertEqual(RenewalConsentEvent.objects.get().actor_id,user.pk)
+        self.assertFalse(RenewalInvoice.objects.using(self.alias_b).exists())
+
+    def test_auto_renewal_concurrent_generation_one_invoice(self):
+        from gym_core.renewal_billing.models import RenewalInvoice
+        user,member,base,config=self.auto_renewal_fixture()
+        def run():
+            try:return self.auto_invoice(member,config).pk
+            finally:connections.close_all()
+        with patch('payments.services.config_for_gym',return_value=config):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results=list(pool.map(lambda _:run(),range(2)))
+        self.assertEqual(results[0],results[1]);self.assertEqual(RenewalInvoice.objects.using(self.alias_a).count(),1)
+
+    def test_auto_renewal_waits_for_window_and_pauses_changed_consent(self):
+        from gym_core.renewal_billing.models import RenewalPreference
+        user,member,base,config=self.auto_renewal_fixture(days=9)
+        self.assertIsNone(self.auto_invoice(member,config))
+        MemberSubscription.objects.using(self.alias_a).filter(pk=base.pk).update(expires_on=timezone.localdate()+timedelta(days=7))
+        MembershipPlan.objects.using(self.alias_a).filter(pk=base.plan_id).update(price=1200)
+        self.assertIsNone(self.auto_invoice(member,config))
+        self.assertFalse(PaymentOrder.objects.using(self.alias_a).exists())
+        self.assertIn('Reconfirm',RenewalPreference.objects.using(self.alias_a).get(member=member).last_note)
+
+    def test_auto_renewal_stale_or_tampered_quote_rejected(self):
+        from gym_core.renewal_billing.services import plan_quote,opt_in
+        user,member,base,config=self.auto_renewal_fixture()
+        with gym_database(self.alias_a):
+            token=plan_quote(base.plan,'restart')
+            with self.assertRaises(EnrollmentError):opt_in(self.alias_a,self.a,member.pk,user.pk,token+'x')
+            MembershipPlan.objects.filter(pk=base.plan_id).update(price=1200)
+            with self.assertRaises(EnrollmentError):opt_in(self.alias_a,self.a,member.pk,user.pk,token)
+
+    def test_auto_renewal_optout_cancels_only_unsubmitted(self):
+        from gym_core.renewal_billing.services import opt_out
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        opt_out(self.alias_a,member.pk,user.pk)
+        with gym_database(self.alias_a):
+            invoice.refresh_from_db();self.assertEqual(invoice.status,'cancelled')
+            self.assertEqual(invoice.subscription.status,'cancelled')
+            self.assertEqual(PaymentOrder.objects.get(subscription=invoice.subscription).status,'created')
+        self.assertIsNone(self.auto_invoice(member,config))
+
+    def test_auto_renewal_optout_preserves_submitted_then_verified_payment(self):
+        from gym_core.renewal_billing.services import opt_out
+        from payments.services import apply_result
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        with gym_database(self.alias_a):
+            order=PaymentOrder.objects.get(subscription_id=invoice.subscription_id)
+            order.status='submitting';order.save()
+        opt_out(self.alias_a,member.pk,user.pk)
+        with gym_database(self.alias_a):
+            invoice.refresh_from_db();self.assertEqual(invoice.status,'issued')
+            apply_result(self.alias_a,order.pk,self.copay_result(order))
+            invoice.refresh_from_db();self.assertEqual(invoice.status,'paid')
+            self.assertEqual(invoice.subscription.status,'active')
+
+    def test_auto_renewal_production_payment_schedules_without_losing_days(self):
+        from payments.services import apply_result
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        with gym_database(self.alias_a):
+            order=PaymentOrder.objects.get(subscription=invoice.subscription)
+            order.status='pending';order.save()
+            apply_result(self.alias_a,order.pk,self.copay_result(order))
+            apply_result(self.alias_a,order.pk,self.copay_result(order))
+            invoice.refresh_from_db();term=MemberSubscription.objects.get(pk=invoice.subscription_id)
+            self.assertEqual(invoice.status,'paid');self.assertEqual(term.status,'active')
+            self.assertEqual(term.starts_on,base.expires_on)
+            self.assertEqual(term.expires_on,end_of_term(base.expires_on,'month'))
+            self.assertEqual(MembershipEvent.objects.filter(subscription=term,action='activate').count(),1)
+
+    def test_auto_renewal_sandbox_never_activates(self):
+        from payments.services import apply_result
+        user,member,base,config=self.auto_renewal_fixture(environment='sandbox')
+        invoice=self.auto_invoice(member,config)
+        with gym_database(self.alias_a):
+            order=PaymentOrder.objects.get(subscription=invoice.subscription);order.status='pending';order.save()
+            apply_result(self.alias_a,order.pk,self.copay_result(order))
+            invoice.refresh_from_db();self.assertEqual(invoice.status,'sandbox')
+            self.assertEqual(invoice.subscription.status,'pending')
+
+    def test_auto_renewal_partial_net_goes_to_review(self):
+        from payments.services import apply_result
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        with gym_database(self.alias_a):
+            order=PaymentOrder.objects.get(subscription=invoice.subscription);order.status='pending';order.save()
+            apply_result(self.alias_a,order.pk,self.copay_result(order,netAmount='999.00'))
+            invoice.refresh_from_db();self.assertEqual(invoice.status,'review')
+            self.assertEqual(invoice.subscription.status,'pending')
+
+    def test_auto_renewal_late_restart_uses_confirmation_day(self):
+        from payments.services import apply_result
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        later=base.expires_on+timedelta(days=4)
+        with gym_database(self.alias_a),patch('django.utils.timezone.localdate',return_value=later):
+            order=PaymentOrder.objects.get(subscription=invoice.subscription);order.status='pending';order.save()
+            apply_result(self.alias_a,order.pk,self.copay_result(order))
+            term=MemberSubscription.objects.get(pk=invoice.subscription_id)
+            self.assertEqual(term.status,'active');self.assertEqual(term.starts_on,later)
+            self.assertEqual(term.expires_on,end_of_term(later,'month'))
+
+    def test_auto_renewal_late_cycle_retains_original_dates(self):
+        from payments.services import apply_result
+        user,member,base,config=self.auto_renewal_fixture(policy='cycle')
+        invoice=self.auto_invoice(member,config)
+        with gym_database(self.alias_a),patch('django.utils.timezone.localdate',return_value=base.expires_on+timedelta(days=4)):
+            order=PaymentOrder.objects.get(subscription=invoice.subscription);order.status='pending';order.save()
+            apply_result(self.alias_a,order.pk,self.copay_result(order))
+            term=MemberSubscription.objects.get(pk=invoice.subscription_id)
+            self.assertEqual(term.status,'active');self.assertEqual(term.starts_on,base.expires_on)
+
+    def test_auto_renewal_checkout_blocks_overlap_and_inactive_access(self):
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        with gym_database(self.alias_a),patch('payments.services.config_for_gym',return_value=config),patch.object(CopayGateway,'submit') as submit:
+            order=PaymentOrder.objects.get(subscription=invoice.subscription)
+            MemberSubscription.objects.create(member=member,plan=base.plan,plan_name=base.plan_name,price=1000,period='month',status='active',
+                starts_on=invoice.subscription.starts_on,expires_on=invoice.subscription.expires_on)
+            with self.assertRaises(CopayError):start_checkout(self.alias_a,self.a,order.pk,'127.0.0.1')
+            submit.assert_not_called()
+        Membership.objects.filter(user=user,organization=self.a).update(is_active=False)
+        self.assertIsNone(self.auto_invoice(member,config))
+
+    def test_auto_renewal_ui_owner_member_csrf_and_isolation(self):
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        client=self.member_client_for(user)
+        self.assertContainsText(client.get('/portal/automatic-renewals/'),invoice.number)
+        self.assertContainsText(self.tenant_client().get('/manage/automatic-renewals/'),'Renewal member')
+        self.assertContainsText(client.get(f'/payments/{PaymentOrder.objects.using(self.alias_a).get().pk}/'),'one-time payment')
+        self.assertEqual(client.get('/manage/automatic-renewals/').status_code,404)
+        self.assertEqual(self.tenant_client().get('/portal/automatic-renewals/').status_code,404)
+        csrf=Client(HTTP_HOST=self.domain_a.hostname,enforce_csrf_checks=True);csrf.force_login(user)
+        self.assertEqual(csrf.post('/portal/automatic-renewals/stop/').status_code,403)
+        Membership.objects.create(user=self.user,organization=self.b,role='owner')
+        self.assertEqual(self.tenant_client(self.domain_b).post(f'/manage/automatic-renewals/{invoice.pk}/cancel/',{'note':'Foreign invoice'}).status_code,404)
+
+    def test_auto_renewal_worker_reminders_dedupe_and_suppress_after_optout(self):
+        from gym_core.renewal_billing.services import sweep_invoices,opt_out
+        from gym_core.notifications.delivery import suppression
+        user,member,base,config=self.auto_renewal_fixture()
+        self.enable_notifications()
+        with patch('payments.services.config_for_gym',return_value=config):
+            sweep_invoices(self.alias_a,self.a);sweep_invoices(self.alias_a,self.a)
+        with gym_database(self.alias_a):
+            self.assertEqual(EmailNotification.objects.filter(source_kind='renewal_invoice').count(),1)
+            notice=EmailNotification.objects.get(source_kind='renewal_invoice')
+            self.assertEqual(suppression(self.a,notice,timezone.now()),'')
+        for days in [1,0]:
+            with patch('django.utils.timezone.localdate',return_value=base.expires_on-timedelta(days=days)),patch('payments.services.config_for_gym',return_value=config):
+                sweep_invoices(self.alias_a,self.a);sweep_invoices(self.alias_a,self.a)
+        self.assertEqual(EmailNotification.objects.using(self.alias_a).filter(source_kind='renewal_invoice').count(),3)
+        opt_out(self.alias_a,member.pk,user.pk)
+        with gym_database(self.alias_a):self.assertEqual(suppression(self.a,notice,timezone.now()),'renewal_invoice_changed')
+
+    def test_auto_renewal_worker_generates_with_email_disabled_and_saas_stops_it(self):
+        from gym_core.notifications.tasks import process_gym_notifications
+        from gym_core.renewal_billing.models import RenewalInvoice
+        user,member,base,config=self.auto_renewal_fixture()
+        with patch('payments.services.config_for_gym',return_value=config),patch('gym_core.notifications.delivery.EmailMultiAlternatives.send') as send:
+            process_gym_notifications(str(self.a.database_key))
+            send.assert_not_called()
+        self.assertEqual(RenewalInvoice.objects.using(self.alias_a).count(),1)
+        self.saas_assignment()
+        GymSubscription.objects.filter(organization=self.a).update(suspended_at=timezone.now())
+        self.assertEqual(self.member_client_for(user).get('/portal/automatic-renewals/').status_code,503)
+
+
+    def test_auto_renewal_ui_requires_acknowledgement_and_records_policy(self):
+        from gym_core.renewal_billing.models import RenewalPreference,RenewalConsentEvent
+        from gym_core.renewal_billing.services import plan_quote,opt_out
+        user,member,base,config=self.auto_renewal_fixture()
+        opt_out(self.alias_a,member.pk,user.pk)
+        client=self.member_client_for(user)
+        with gym_database(self.alias_a):token=plan_quote(base.plan,'restart')
+        self.assertEqual(client.post('/portal/automatic-renewals/',{'quoted_plan':token}).status_code,200)
+        self.assertFalse(RenewalPreference.objects.using(self.alias_a).get(member=member).enabled)
+        self.assertEqual(client.post('/portal/automatic-renewals/',{'quoted_plan':token,'acknowledge':'on'}).status_code,302)
+        self.assertTrue(RenewalPreference.objects.using(self.alias_a).get(member=member).enabled)
+        self.assertEqual(RenewalConsentEvent.objects.using(self.alias_a).filter(action='enabled').count(),2)
+        self.assertEqual(self.tenant_client().post('/manage/automatic-renewals/',{'enabled':'on','lead_days':5,'late_policy':'cycle'}).status_code,302)
+        self.assertIsNone(self.auto_invoice(member,config))
+        self.assertFalse(PaymentOrder.objects.using(self.alias_a).exists())
+
+    def test_auto_renewal_merchant_failure_rolls_back_term_and_invoice(self):
+        from gym_core.renewal_billing.services import generate_invoice
+        from gym_core.renewal_billing.models import RenewalInvoice
+        user,member,base,config=self.auto_renewal_fixture()
+        with patch('payments.services.config_for_gym',side_effect=CopayConfigurationError('Missing test config')):
+            with self.assertRaises(CopayError):generate_invoice(self.alias_a,self.a,member.pk)
+        self.assertFalse(RenewalInvoice.objects.using(self.alias_a).exists())
+        self.assertFalse(PaymentOrder.objects.using(self.alias_a).exists())
+        self.assertEqual(MemberSubscription.objects.using(self.alias_a).count(),1)
+
+    def test_auto_renewal_existing_quote_survives_price_edit_next_cycle_requires_consent(self):
+        from payments.services import apply_result
+        from gym_core.renewal_billing.models import RenewalInvoice
+        user,member,base,config=self.auto_renewal_fixture()
+        invoice=self.auto_invoice(member,config)
+        MembershipPlan.objects.using(self.alias_a).filter(pk=base.plan_id).update(price=1500)
+        with gym_database(self.alias_a):
+            order=PaymentOrder.objects.get(subscription=invoice.subscription);order.status='pending';order.save()
+            apply_result(self.alias_a,order.pk,self.copay_result(order))
+            self.assertEqual(PaymentOrder.objects.get(pk=order.pk).amount,Decimal('1000.00'))
+            term=MemberSubscription.objects.get(pk=invoice.subscription_id)
+            self.assertEqual(term.status,'active');self.assertEqual(term.price,Decimal('1000.00'))
+        with patch('django.utils.timezone.localdate',return_value=term.expires_on-timedelta(days=7)):
+            self.assertIsNone(self.auto_invoice(member,config))
+        self.assertEqual(RenewalInvoice.objects.using(self.alias_a).count(),1)
+
+    def test_auto_renewal_frozen_or_manual_pending_request_prevents_generation(self):
+        user,member,base,config=self.auto_renewal_fixture()
+        MemberSubscription.objects.using(self.alias_a).filter(pk=base.pk).update(status='frozen')
+        self.assertIsNone(self.auto_invoice(member,config))
+        MemberSubscription.objects.using(self.alias_a).filter(pk=base.pk).update(status='active')
+        with gym_database(self.alias_a):
+            request_renewal(self.alias_a,member.pk,user.pk,base.plan_id,base.expires_on,'Please renew')
+        self.assertIsNone(self.auto_invoice(member,config))
+        self.assertFalse(PaymentOrder.objects.using(self.alias_a).exists())
 
 
 if __name__ == "__main__":

@@ -62,10 +62,25 @@ def suppression(gym, notification, now):
         term = MemberSubscription.objects.filter(pk=notification.source_id).first()
         if not term or term.status != 'active' or term.expires_on.isoformat() != notification.source_version:
             return 'membership_changed'
+        from gym_core.renewal_billing.models import RenewalInvoice,RenewalBillingSettings
+        if (RenewalBillingSettings.objects.filter(pk=1,enabled=True).exists()
+                and RenewalInvoice.objects.filter(previous_subscription=term,status='issued',member__renewal_preference__enabled=True).exists()):
+            return 'renewal_invoice_available'
         today = timezone.localdate(now)
         if MemberSubscription.objects.filter(member_id=term.member_id,status='active',
                 starts_on__lte=term.expires_on, expires_on__gt=max(today,term.expires_on)).exclude(pk=term.pk).exists():
             return 'membership_already_renewed'
+    if notification.source_kind == 'renewal_invoice':
+        from gym_core.renewal_billing.models import RenewalInvoice,RenewalPreference,RenewalBillingSettings
+        from gym_core.renewal_billing.services import member_access
+        invoice=RenewalInvoice.objects.select_related('subscription','member').filter(pk=notification.source_id).first()
+        preference=RenewalPreference.objects.filter(member_id=notification.member_id,enabled=True).first()
+        if (not invoice or invoice.status!='issued' or invoice.subscription.status!='pending' or not preference
+                or not access.modules.get('payments',False) or not member_access(gym,invoice.member)
+                or str(preference.revision)!=notification.source_version
+                or not RenewalBillingSettings.objects.filter(pk=1,enabled=True).exists()
+                or PaymentOrder.objects.filter(subscription_id=invoice.subscription_id,status__in=['paid','failed']).exists()):
+            return 'renewal_invoice_changed'
     if notification.source_kind == 'payment':
         order = PaymentOrder.objects.filter(pk=notification.source_id).first()
         if not order or order.environment != 'production' or order.status != notification.expected_status:

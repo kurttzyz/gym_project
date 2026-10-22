@@ -421,3 +421,13 @@ COPAY-approved key upgrade; do not silently replace registered keys.
 See [COPAY configuration](copay.md), [membership lifecycle](member-enrollment.md),
 [member self-service](member-self-service.md), [attendance](attendance.md),
 [classes](classes.md), [POS](pos.md), and [notifications](notifications.md).
+
+### Automatic renewal invoicing
+
+Owners can now enable renewal invoices at `/manage/automatic-renewals/` and
+choose the advance notice and late-payment policy. Members explicitly agree to a
+quoted plan at `/portal/automatic-renewals/` and can stop future invoices there.
+The worker generates invoices and optional reminders; the member approves every
+one-time COPAY checkout. A verified production payment schedules or activates
+the next eligible membership. Each gym uses its own merchant account.
+See the [complete automatic renewal flow and upgrade guide](automatic-renewals.md).

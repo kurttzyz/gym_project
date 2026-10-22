@@ -5,7 +5,7 @@ from django.utils.cache import patch_cache_control
 from platform_core.billing.services import access_for_gym
 
 
-RECOVERY_ROUTES = {"owner-wallet", "wallet-destination-add", "wallet-withdrawal-cancel","member-reset-request", "member-reset-requested", "member-reset-confirm", "member-reset-complete", "member-password-change", "member-profile", "member-payments","owner-notifications", "notification-detail", "notification-test", "notification-retry", "member-email-preferences","login", "logout", "tenant-saas-billing", "tenant-saas-invoice",
+RECOVERY_ROUTES = {"member-auto-renewals-stop","owner-wallet", "wallet-destination-add", "wallet-withdrawal-cancel","member-reset-request", "member-reset-requested", "member-reset-confirm", "member-reset-complete", "member-password-change", "member-profile", "member-payments","owner-notifications", "notification-detail", "notification-test", "notification-retry", "member-email-preferences","login", "logout", "tenant-saas-billing", "tenant-saas-invoice",
                    "copay-notify", "payment-return", "payment-detail", "payment-recheck", "payment-receipt", "pos-receipt"}
 PUBLIC_READS = {"home", "about", "memberships", "contact", "contact-thanks", "join-thanks"}
 WEBSITE_ROUTES = PUBLIC_READS | {"join", "website-edit"}
@@ -46,6 +46,8 @@ class TenantSubscriptionMiddleware:
             if not (access.modules.get("attendance", False) or access.modules.get("pos", False) or access.modules.get("memberships", False)):
                 return self.block(request, module=True)
             return self.get_response(request)
+        if name in {"member-auto-renewals", "owner-auto-renewals", "owner-auto-invoice-cancel"} and not access.modules.get("payments", False):
+            return self.block(request, module=True)
         module = ("pos" if name in POS_ROUTES else "websites" if name in WEBSITE_ROUTES else "attendance" if name in ATTENDANCE_ROUTES
                   else "payments" if name in PAYMENT_ROUTES else "memberships")
         if name == "join" and not access.modules.get("memberships", False):

@@ -15,9 +15,14 @@ from pos import views as pos_views
 from .classes import views as class_views
 from .notifications import views as notification_views
 from .self_service import views as self_service_views
+from .renewal_billing import views as renewal_billing_views
 from accounts import recovery_views
 
 urlpatterns = [
+    path("portal/automatic-renewals/", renewal_billing_views.preferences, name="member-auto-renewals"),
+    path("portal/automatic-renewals/stop/", renewal_billing_views.stop, name="member-auto-renewals-stop"),
+    path("manage/automatic-renewals/", renewal_billing_views.settings_page, name="owner-auto-renewals"),
+    path("manage/automatic-renewals/<uuid:invoice_id>/cancel/", renewal_billing_views.cancel, name="owner-auto-invoice-cancel"),
     path("manage/wallet/", collection_views.owner_wallet, name="owner-wallet"),
     path("manage/wallet/destinations/", collection_views.add_destination, name="wallet-destination-add"),
     path("manage/wallet/withdrawals/<uuid:withdrawal_id>/cancel/", collection_views.cancel_withdrawal, name="wallet-withdrawal-cancel"),
