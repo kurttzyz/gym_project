@@ -1,3 +1,4 @@
+from uuid import uuid4
 from django.contrib import messages
 from django.contrib.auth import login
 from django.core.paginator import Paginator
@@ -14,6 +15,9 @@ from gyms.databases import ready_database
 from gym_core.memberships.views import owner_page
 from gym_core.memberships.models import MemberSubscription, MembershipApplication, MembershipPlan
 from gym_core.attendance.views import attendance_page
+from gym_core.attendance.services import AttendanceError, card_code, record_scan
+from tenant_data.models import Location
+from platform_core.billing.services import access_for_gym
 from websites.public_pages.views import public_page
 from .forms import (AssignPlanForm, ExistingMemberAccountForm, MemberAccountForm,
                     MemberProfileForm, FrontDeskMemberForm, SubscriptionActionForm, waiver_version)
@@ -26,21 +30,44 @@ from .services import (EnrollmentError, assign_plan, change_subscription, claim_
 def register_member(request):
     form=FrontDeskMemberForm(request.POST if request.method=='POST' else None)
     if request.method=='POST' and form.is_valid():
-        try:
-            with transaction.atomic(using=ready_database(request.tenant)):
-                member=form.save()
-                term=assign_plan(ready_database(request.tenant),member.pk,form.cleaned_data['plan'].pk,
-                    timezone.localdate(),request.user.pk)
-                kind='Walk-in day pass' if form.cleaned_data['walk_in'] else 'Member registration'
-                record_event(term,request.user.pk,'front_desk_intake',
-                    kind+' at front desk. Pending owner/payment verification; no payment recorded or entry granted.')
-        except IntegrityError:
-            form.add_error(None,'A member with these details may already exist. Ask the owner to review the member record.')
-        except (EnrollmentError,MembershipPlan.DoesNotExist):
-            form.add_error(None,'This plan is no longer available. Reload and choose a current plan.')
+        walk_in=form.cleaned_data['walk_in']
+        access=access_for_gym(request.tenant)
+        if walk_in and (not access.allowed or not access.modules.get('attendance',False)):
+            form.add_error(None,'Walk-in check-in requires the attendance module for this gym.')
         else:
-            messages.success(request,f'{member.full_name} registered ({member.member_number}). Membership is pending. Ask the owner to verify payment and activate it before check-in.')
-            return redirect('front-desk-member-new')
+            try:
+                alias=ready_database(request.tenant)
+                with transaction.atomic(using=alias):
+                    branch=None
+                    if walk_in:
+                        branch=Location.objects.select_for_update().get(pk=form.cleaned_data['branch'].pk,is_active=True)
+                    member=form.save()
+                    term=assign_plan(alias,member.pk,form.cleaned_data['plan'].pk,
+                        timezone.localdate(),request.user.pk)
+                    if walk_in:
+                        if term.period != 'day':
+                            raise EnrollmentError('The day-pass plan changed. Reload and choose a current day pass.')
+                        change_subscription(alias,member.pk,term.pk,'activate',
+                            'Walk-in day pass authorized by front desk; no payment receipt recorded.',request.user.pk)
+                        result=record_scan(alias,request.tenant,card_code(request.tenant,member),branch.pk,
+                            'checkin',uuid4(),request.user.pk)
+                        if result.outcome != 'checked_in':
+                            raise EnrollmentError('Walk-in could not be checked in. No registration or access change was saved.')
+                    note=('Walk-in day pass registered, activated and checked in at '+branch.name+'. No payment receipt recorded.'
+                        if walk_in else 'Member registration at front desk. Pending owner/payment verification; no payment recorded or entry granted.')
+                    record_event(term,request.user.pk,'front_desk_intake',note)
+            except IntegrityError:
+                form.add_error(None,'A member with these details may already exist. Ask the owner to review the member record.')
+            except (MembershipPlan.DoesNotExist,Location.DoesNotExist):
+                form.add_error(None,'This plan or branch is no longer available. Reload and choose current options.')
+            except (EnrollmentError,AttendanceError) as error:
+                form.add_error(None,str(error))
+            else:
+                if walk_in:
+                    messages.success(request,f'{member.full_name} ({member.member_number}) checked in at {branch.name}. Day pass active until the start of {term.expires_on}.')
+                    return redirect('attendance-scanner')
+                messages.success(request,f'{member.full_name} registered ({member.member_number}). Membership is pending. Ask the owner to verify payment and activate it before check-in.')
+                return redirect('front-desk-member-new')
     return render(request,'members/front_desk_new.html',{'form':form})
 
 

@@ -448,19 +448,26 @@ Owners, managers and active staff can open **Add member / walk-in** at
 real name, email and phone, plus optional birth/emergency details. Select a
 published plan. Tick **Walk-in / day pass** for a walk-in and select a day-period
 plan created by the owner; monthly/quarterly/yearly plans are rejected for that
-option. Existing profiles should be handled by the owner; duplicate emails cannot
+option. Choose the check-in branch; a single active branch is selected automatically.
+Existing profiles should be handled by the owner; duplicate emails cannot
 create a second profile or overwrite existing member information.
 
-Registration creates a gym-local profile and a pending term with a price snapshot
-and the staff operator in its event history. It does not create a portal account,
-accept a waiver for the visitor, collect cash/COPAY, or grant entry. Staff cannot
-change prices, edit existing profiles or activate memberships through this form.
-The owner reviews the member, verifies any offline payment and activates the term
-with its receipt/reference, or issues a COPAY payment. An offline activation is
-access approval, not a COPAY payment receipt. The owner can print the QR card for
-a visitor without a portal login; staff then scan it normally at the front desk.
+For a walk-in, saving creates the profile and day pass, activates access, and
+records check-in at the selected branch immediately. No owner approval or portal
+login is needed. The attendance history shows the staff operator. A denied entry
+rolls back the registration and activation together; it never leaves a partially
+admitted visitor. The memberships and attendance modules must both be enabled.
+Only active branches and published day-period plans can be used for this flow.
+
+Regular registrations still create a pending term for owner/payment verification.
+Staff cannot change prices, edit existing profiles or activate existing regular
+memberships from this form. The owner can print a QR card for later checkout or
+check-in without a visitor portal account. Saving either type does not collect
+cash/COPAY, create a payment receipt, or record waiver acceptance. Staff handle
+on-site payments and waivers separately; walk-in activation is entry authorization,
+not evidence of a successful payment.
 
 Day passes are calendar-day access in the gym's configured time zone: today until
-the start of tomorrow, not a rolling 24 hours. Expired, unpaid/pending, frozen or
+the start of tomorrow, not a rolling 24 hours. Expired, pending, frozen or
 disabled memberships cannot check in. Regular memberships use their selected
 plan period. Both profiles and intake audit stay in that gym's own database.

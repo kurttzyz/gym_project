@@ -5,6 +5,7 @@ from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 from django.utils import timezone
 from .models import MemberProfile
 from gym_core.memberships.models import MembershipPlan
+from tenant_data.models import Location
 
 
 def waiver_version(text):
@@ -35,11 +36,16 @@ class FrontDeskMemberForm(MemberProfileForm):
     walk_in = forms.BooleanField(required=False,label="Walk-in / day pass")
     plan = forms.ModelChoiceField(queryset=MembershipPlan.objects.none(),label="Membership plan")
 
+    branch = forms.ModelChoiceField(queryset=Location.objects.none(),required=False,label="Check-in branch (walk-ins)")
+
     class Meta(MemberProfileForm.Meta):
         fields = tuple(field for field in MemberProfileForm.Meta.fields if field != "is_active")
 
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
+        self.fields['branch'].queryset=Location.objects.filter(is_active=True)
+        branches=list(self.fields['branch'].queryset[:2])
+        if len(branches)==1:self.fields['branch'].initial=branches[0].pk
         self.fields['plan'].queryset=MembershipPlan.objects.filter(is_active=True)
         self.fields['plan'].label_from_instance=lambda plan: f'{plan.name} — PHP {plan.price:.2f} / {plan.get_period_display()}'
 
@@ -47,6 +53,10 @@ class FrontDeskMemberForm(MemberProfileForm):
         data=super().clean()
         if data.get('walk_in') and data.get('plan') and data['plan'].period != 'day':
             self.add_error('plan','Choose a day-pass plan for a walk-in visitor.')
+        if data.get('walk_in') and not data.get('branch') and 'branch' not in self.errors:
+            branches=list(self.fields['branch'].queryset[:2])
+            if len(branches)==1:data['branch']=branches[0]
+            else:self.add_error('branch','Select an active branch to check in this walk-in.')
         return data
 
 

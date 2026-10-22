@@ -3895,25 +3895,69 @@ class GymDatabaseTests(unittest.TestCase):
     def test_front_desk_walkin_day_pass_requires_no_portal_account(self):
         plan=self.plan(period='day',price=Decimal('200.00'))
         account=self.desk_account()
-        response=self.member_client_for(account).post('/desk/members/new/',self.front_desk_payload(plan,walk_in='on'))
+        staff=self.member_client_for(account)
+        payload=self.front_desk_payload(plan,walk_in='on',price='0.01')
+        response=staff.post('/desk/members/new/',payload)
         self.assertEqual(response.status_code,302)
+        self.assertEqual(response['Location'],'/desk/')
         with gym_database(self.alias_a):
             member=MemberProfile.objects.get()
             term=MemberSubscription.objects.get(member=member)
             self.assertIsNone(member.user_id)
             self.assertEqual(term.starts_on,timezone.localdate())
             self.assertEqual(term.expires_on,timezone.localdate()+timedelta(days=1))
-            self.assertEqual(term.status,'pending')
+            self.assertEqual(term.status,'active');self.assertEqual(term.price,plan.price)
             self.assertIn('Walk-in day pass',MembershipEvent.objects.get(action='front_desk_intake').note)
-        self.assertEqual(self.tenant_client().get(f'/manage/members/{member.pk}/').status_code,200)
-        staff=self.member_client_for(account)
+            visit=AttendanceVisit.objects.get(member=member)
+            self.assertEqual(visit.subscription_id,term.pk)
+            self.assertEqual(visit.location_id,self.branch_a.pk)
+            self.assertEqual(visit.checked_in_by_id,account.pk)
+            self.assertEqual(AttendanceScan.objects.get().outcome,'checked_in')
+            self.assertFalse(PaymentOrder.objects.exists())
+        self.assertEqual(staff.post('/desk/members/new/',payload).status_code,200)
+        self.assertEqual(AttendanceVisit.objects.using(self.alias_a).count(),1)
+        self.assertContainsText(staff.get('/desk/attendance/'),member.full_name)
         code=card_code(self.a,member)
-        self.assertContainsText(self.scan_card(code,client=staff),'No active membership')
-        self.assertEqual(self.membership_action(member,term,'activate',note='Cash day-pass receipt verified by owner').status_code,302)
-        self.assertContainsText(self.scan_card(code,client=staff),'Entry allowed')
+        self.assertContainsText(self.scan_card(code,client=staff),'Already checked in')
         self.assertContainsText(self.scan_card(code,action='checkout',client=staff),'Checked out successfully')
         with patch('django.utils.timezone.localdate',return_value=term.expires_on):
             self.assertContainsText(self.scan_card(code,client=staff),'No active membership')
+
+    def test_front_desk_walkin_requires_active_local_branch(self):
+        plan=self.plan(period='day')
+        client=self.member_client_for(self.desk_account())
+        with gym_database(self.alias_a):
+            second=Location.objects.create(name='Second branch')
+            disabled=Location.objects.create(name='Disabled',is_active=False)
+        for branch in ['',str(self.branch_b.pk),str(disabled.pk)]:
+            # Location IDs can coincide across gym DBs. Choose a foreign-only ID.
+            if branch==str(self.branch_b.pk):
+                with gym_database(self.alias_b):
+                    foreign=Location.objects.create(id=99999,name='Foreign only')
+                branch=str(foreign.pk)
+            response=client.post('/desk/members/new/',self.front_desk_payload(plan,walk_in='on',branch=branch))
+            self.assertEqual(response.status_code,200)
+            self.assertFalse(MemberProfile.objects.using(self.alias_a).exists())
+        response=client.post('/desk/members/new/',self.front_desk_payload(plan,walk_in='on',branch=str(second.pk)))
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(AttendanceVisit.objects.using(self.alias_a).get().location_id,second.pk)
+
+    def test_front_desk_walkin_rolls_back_if_checkin_denied(self):
+        plan=self.plan(period='day')
+        client=self.member_client_for(self.desk_account())
+        with patch('gym_core.members.views.record_scan',return_value=SimpleNamespace(outcome='denied')):
+            response=client.post('/desk/members/new/',self.front_desk_payload(plan,walk_in='on'))
+        self.assertContainsText(response,'Walk-in could not be checked in')
+        for model in [MemberProfile,MemberSubscription,MembershipEvent,AttendanceVisit,AttendanceScan]:
+            self.assertFalse(model.objects.using(self.alias_a).exists())
+
+    def test_front_desk_walkin_requires_attendance_entitlement(self):
+        plan=self.plan(period='day')
+        self.saas_assignment(plan=self.saas_plan(attendance=False),trial=14)
+        client=self.member_client_for(self.desk_account())
+        response=client.post('/desk/members/new/',self.front_desk_payload(plan,walk_in='on'))
+        self.assertContainsText(response,'requires the attendance module')
+        self.assertFalse(MemberProfile.objects.using(self.alias_a).exists())
 
     def test_front_desk_rejects_hidden_foreign_and_non_day_walkin_plans(self):
         client=self.member_client_for(self.desk_account())
