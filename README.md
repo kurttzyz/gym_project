@@ -252,3 +252,7 @@ Optional VPS hosting automation checks gym ownership and DNS, configures an isol
 ### Central gym collections and manual withdrawals
 
 Optional central COPAY collection mode records member payments in separate gym/environment ledgers. Owners view pending, available and reserved balances, submit verified payout destinations and request withdrawals. Platform admins verify settlement, approve requests and record completed manual payouts; no payout API is invoked. Software subscription revenue stays separate. Sandbox is the starting mode; production requires explicit COPAY approval configuration. See [setup, accounting rules and recovery](docs/central-collections.md). Upgrade central migrations and existing gym payment schemas before enabling it.
+
+### Owner and member operating guide
+
+The [owner/member manual](docs/owner-member-manual.md) lists current features, page paths, action-by-action instructions and onboarding/daily/renewal/payment flows. Its primary payment model is each gym's own COPAY merchant account, with a separate operator appendix for switching from optional central collections without losing historical records.
