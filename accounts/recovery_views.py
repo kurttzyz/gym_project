@@ -13,8 +13,9 @@ from .recovery import RecoveryForm,queue_recovery,valid_request
 
 
 def private_response(response, *, form=False):
-    # no-referrer makes Chromium submit forms with Origin: null.
-    response['Referrer-Policy']='same-origin' if form else 'no-referrer'
+    # All HTML can include the authenticated sidebar logout POST, even status pages.
+    # no-referrer can make Chromium submit that form with Origin: null.
+    response['Referrer-Policy']='no-referrer' if 300 <= response.status_code < 400 else 'same-origin'
     response['X-Robots-Tag']='noindex, nofollow'
     return response
 

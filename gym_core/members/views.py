@@ -127,7 +127,7 @@ def invite(request, member_id):
     response = render(request, "members/invitation.html", {
         "member": member, "activation_url": request.build_absolute_uri(reverse("member-activate", args=[token]))
     })
-    response["Referrer-Policy"] = "no-referrer"
+    response["Referrer-Policy"] = "same-origin"
     return response
 
 

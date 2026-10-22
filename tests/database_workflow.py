@@ -1205,7 +1205,7 @@ class GymDatabaseTests(unittest.TestCase):
         response = self.tenant_client().post(f"/manage/members/{member.pk}/invite/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("no-store", response["Cache-Control"])
-        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        self.assertEqual(response["Referrer-Policy"], "same-origin")
         token = re.search(r'/activate/([A-Za-z0-9_-]+)/', response.content.decode()).group(1)
         client = Client(HTTP_HOST=self.domain_a.hostname, enforce_csrf_checks=True)
         username = "new-member-" + uuid4().hex
@@ -1788,7 +1788,7 @@ class GymDatabaseTests(unittest.TestCase):
         card=client.get("/portal/card/")
         self.assertContainsText(card,member.member_number)
         self.assertIn("no-store",card["Cache-Control"])
-        self.assertEqual(card["Referrer-Policy"],"no-referrer")
+        self.assertEqual(card["Referrer-Policy"],"same-origin")
         image=client.get("/portal/card.svg")
         self.assertEqual(image["Content-Type"],"image/svg+xml")
         self.assertIn(b"<svg",image.content)
@@ -3547,6 +3547,24 @@ class GymDatabaseTests(unittest.TestCase):
         response=self.client.get('/',{'q':self.a.slug,'status':'ready'})
         self.assertNotIn(f'<strong>{self.a.name}</strong>'.encode(),response.content)
         self.assertContainsText(response,'No gyms match this view')
+
+    def test_member_logout_from_card_and_recovery_status_preserves_csrf(self):
+        user,member,session=self.class_fixture()
+        for path in ['/portal/card/','/accounts/password-reset/requested/','/accounts/password-reset/complete/']:
+            client=self.member_client_for(user,csrf=True)
+            page=client.get(path,secure=True)
+            self.assertEqual(page.status_code,200)
+            self.assertEqual(page['Referrer-Policy'],'same-origin')
+            self.assertIn(b'action="/accounts/logout/"',page.content)
+            token=client.cookies['csrftoken'].value
+            self.assertEqual(client.get('/accounts/logout/',secure=True).status_code,405)
+            self.assertEqual(client.post('/accounts/logout/',secure=True,HTTP_ORIGIN='https://'+self.domain_a.hostname).status_code,403)
+            self.assertEqual(client.post('/accounts/logout/',{'csrfmiddlewaretoken':token},secure=True,
+                HTTP_ORIGIN='null').status_code,403)
+            response=client.post('/accounts/logout/',{'csrfmiddlewaretoken':token},secure=True,
+                HTTP_ORIGIN='https://'+self.domain_a.hostname,HTTP_REFERER='https://'+self.domain_a.hostname+path)
+            self.assertEqual(response.status_code,302)
+            self.assertNotIn('_auth_user_id',client.session)
 
     def remove_auto_renewal_schema(self):
         # Emulate pre-0008 gyms without leaving a recorded dependent migration.

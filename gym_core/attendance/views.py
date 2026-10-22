@@ -113,7 +113,8 @@ def member_page(view):
 
 def render_card(request, member, *, owner=False):
     response = render(request, "attendance/card.html", {"member": member, "code": card_code(request.tenant, member), "owner": owner})
-    response["Referrer-Policy"] = "no-referrer"
+    # This HTML includes the sidebar logout POST; preserve its same-origin CSRF check.
+    response["Referrer-Policy"] = "same-origin"
     return response
 
 
